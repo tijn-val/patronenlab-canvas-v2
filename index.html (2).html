@@ -1,0 +1,3588 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Patronenlab canvas</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  /* layout: an endless, pannable canvas behind a bottom dock of bouwstenen.
+     dragging empty canvas pans the view; the dotted grid and hex grid both scroll with it. */
+  :root{
+    --bg:#faf8f3;
+    --surface:#ffffff;
+    --fg:#2b2822;
+    --fg-muted:#726d61;
+    --border:#e4ddcf;
+    --dot:#e3dccb;
+
+    --lijf:#afcaf4;
+    --jij:#fed3da;
+    --anderen:#fded90;
+    --omgeving:#d6eef0;
+    --krachten:#a3d8bc;
+    --personen:#d9c7f0;
+    --hex-line:#201d17;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#1b1a16;
+      --surface:#25231e;
+      --fg:#f1ede3;
+      --fg-muted:#aca895;
+      --border:#3a362c;
+      --dot:#36332a;
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#1b1a16;
+    --surface:#25231e;
+    --fg:#f1ede3;
+    --fg-muted:#aca895;
+    --border:#3a362c;
+    --dot:#36332a;
+    color-scheme:dark;
+  }
+
+  *{box-sizing:border-box;}
+  [hidden]{display:none !important;}
+  html, body{height:100%;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--fg);
+    font-family:'Space Mono', monospace;
+    overflow:hidden;
+  }
+
+  /* endless canvas: a fixed viewport onto a world layer that pans underneath it */
+  .canvas{
+    position:fixed;
+    top:0; left:0; right:0;
+    bottom:0;
+    background-color:var(--surface);
+    background-image:radial-gradient(var(--dot) 1.3px, transparent 1.3px);
+    background-size:20px 20px;
+    overflow:hidden;
+    cursor:grab;
+  }
+  .canvas.panning{cursor:grabbing;}
+  .world{
+    position:absolute;
+    top:0; left:0;
+    width:0; height:0;
+    transform-origin:0 0;
+  }
+  .zoom-controls{
+    position:absolute;
+    right:max(16px, env(safe-area-inset-right,0px));
+    bottom:16px;
+    z-index:5;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  .zoom-btn{
+    width:36px;height:36px;
+    border-radius:10px;
+    border:1px solid var(--border);
+    background:var(--surface);
+    color:var(--fg);
+    font-size:1.15rem;
+    line-height:1;
+    cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .zoom-btn:hover{border-color:var(--fg-muted);}
+  .zoom-btn:focus-visible{outline:2px solid var(--fg); outline-offset:2px;}
+
+  .trash-zone{
+    position:absolute;
+    left:max(16px, env(safe-area-inset-left,0px));
+    bottom:16px;
+    z-index:5;
+    width:76px;
+    height:66px;
+    clip-path:polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+    background:#4a4a48;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    transition:background .15s ease, transform .15s ease;
+  }
+  .trash-zone .trash-icon{width:24px;height:24px;color:#e9e8e4;pointer-events:none;}
+  .trash-zone.drag-over{background:#b23b3b;transform:scale(1.35);}
+  /* hidden while another menu or toolbox is open, so it doesn't clutter or overlap those */
+  .trash-zone.suppressed{opacity:0;transform:scale(0.85);pointer-events:none;}
+  .canvas .empty-hint{
+    position:absolute;
+    left:50%;
+    top:50%;
+    transform:translate(-50%, -50%);
+    max-width:340px;
+    color:var(--fg-muted);
+    font-size:0.82rem;
+    line-height:1.5;
+    text-align:center;
+    pointer-events:none;
+  }
+  .canvas.has-items .empty-hint{display:none;}
+  .empty-hint-callout{
+    position:absolute;
+    z-index:4;
+    color:var(--fg-muted);
+    font-family:'Space Mono', monospace;
+    font-size:0.72rem;
+    line-height:1.45;
+    max-width:180px;
+    pointer-events:none;
+  }
+  .canvas.has-items .empty-hint-callout{display:none;}
+  .empty-hint-tools{
+    left:68px;
+    top:50%;
+    transform:translateY(-50%);
+  }
+  .empty-hint-category{
+    left:50%;
+    bottom:78px;
+    transform:translateX(-50%);
+    text-align:center;
+  }
+  .connections{position:absolute;top:0;left:0;overflow:visible;pointer-events:none;}
+  .connections .conn-hit{pointer-events:auto;}
+  .conn-hit{cursor:pointer;}
+  .outlines{position:absolute;top:0;left:0;overflow:visible;pointer-events:none;}
+
+  /* a verbinding is a stippellijn with the dots marching from begin to eind, so the
+     direction reads at a glance even before you spot the pijlpunt */
+  @keyframes conn-flow{
+    to{ stroke-dashoffset:-16; }
+  }
+  .conn-line{
+    stroke-width:2.25;
+    stroke-linecap:round;
+    stroke-dasharray:0.5 7.5;
+    animation:conn-flow 1s linear infinite;
+  }
+
+  /* topbar: title + actions, floating over the canvas */
+  .topbar{
+    position:fixed;
+    top:max(14px, env(safe-area-inset-top,0px));
+    left:max(16px, env(safe-area-inset-left,0px));
+    right:max(16px, env(safe-area-inset-right,0px));
+    z-index:20;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    pointer-events:none;
+  }
+  .topbar *{pointer-events:auto;}
+  .topbar h1{
+    font-family:'Space Mono', monospace;
+    font-weight:700;
+    font-size:0.92rem;
+    text-transform:uppercase;
+    letter-spacing:0.03em;
+    margin:0;
+    background:var(--surface);
+    border:1px solid var(--border);
+    padding:7px 14px;
+    border-radius:999px;
+  }
+  .topbar-actions{display:flex;gap:8px;}
+  button.btn{
+    font-family:'Space Mono', monospace;
+    font-size:0.78rem;
+    text-transform:uppercase;
+    letter-spacing:0.02em;
+    font-weight:400;
+    color:var(--fg-muted);
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:7px 14px;
+    cursor:pointer;
+  }
+  button.btn:hover{color:var(--fg);border-color:var(--fg-muted);}
+  button.btn:focus-visible{outline:2px solid var(--fg); outline-offset:2px;}
+  button.btn.btn-small{padding:6px 12px;font-size:0.72rem;}
+  button.btn.btn-icon{padding:6px 10px;}
+  button.btn.btn-primary{background:var(--fg);color:var(--bg);border-color:var(--fg);}
+  button.btn.btn-primary:hover{opacity:0.88;color:var(--bg);}
+  button.btn.btn-danger{color:#b23b3b;border-color:#e0bcbc;}
+  button.btn.btn-danger:hover{color:#8f2c2c;border-color:#b23b3b;}
+
+  /* floating toolbar shown while picking bouwstenen for a note-group, and the note editor */
+  .group-toolbar{
+    position:absolute;
+    top:16px;
+    left:50%;
+    transform:translateX(-50%);
+    z-index:6;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:6px 8px 6px 16px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.08);
+  }
+  .group-toolbar-count{font-family:'Space Mono', monospace; font-size:0.74rem; color:var(--fg-muted); white-space:nowrap;}
+  .group-note-panel{
+    position:absolute;
+    top:16px;
+    left:50%;
+    transform:translateX(-50%);
+    z-index:7;
+    width:min(340px, 82vw);
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:12px;
+    box-shadow:0 6px 20px rgba(0,0,0,0.14);
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .group-note-panel textarea{
+    width:100%;
+    min-height:84px;
+    resize:vertical;
+    font-family:'Space Mono', monospace;
+    font-size:0.8rem;
+    padding:9px 10px;
+    border:1px solid var(--border);
+    border-radius:9px;
+    background:var(--bg);
+    color:var(--fg);
+    line-height:1.4;
+  }
+  .group-note-panel textarea:focus-visible{outline:2px solid var(--fg); outline-offset:1px;}
+  .group-note-actions{display:flex;justify-content:space-between;align-items:center;gap:8px;}
+  .group-note-actions-right{display:flex;gap:8px;margin-left:auto;}
+
+  /* naming panel for a dropped persoon: who this marker represents */
+  .person-name-panel{
+    position:absolute;
+    top:16px;
+    left:50%;
+    transform:translateX(-50%);
+    z-index:7;
+    width:min(300px, 82vw);
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:12px;
+    box-shadow:0 6px 20px rgba(0,0,0,0.14);
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .person-name-panel input, .person-name-panel textarea, .person-name-panel select{
+    width:100%;
+    font-family:'Space Mono', monospace;
+    font-size:0.8rem;
+    padding:9px 10px;
+    border:1px solid var(--border);
+    border-radius:9px;
+    background:var(--bg);
+    color:var(--fg);
+    resize:vertical;
+    line-height:1.4;
+  }
+  .person-name-panel input:focus-visible, .person-name-panel textarea:focus-visible, .person-name-panel select:focus-visible{outline:2px solid var(--fg); outline-offset:1px;}
+
+  /* select-pijltje: het ingebouwde browserpijltje staat te dicht tegen de rand aan op
+     veel platforms, dus die zetten we uit en tekenen we 'm zelf, met wat lucht ernaast */
+  .select-wrap{position:relative;}
+  .select-wrap select{
+    appearance:none;
+    -webkit-appearance:none;
+    -moz-appearance:none;
+    padding-right:34px;
+    cursor:pointer;
+  }
+  .select-wrap-chevron{
+    position:absolute;
+    top:50%;
+    right:12px;
+    width:15px;height:15px;
+    transform:translateY(-50%);
+    color:var(--fg-muted);
+    pointer-events:none;
+  }
+
+  /* "bestaat al" melding in het +-bouwsteen-paneel: toont de bestaande bouwsteen zelf
+     als sleepbaar item, zodat je 'm meteen vanaf hier het canvas op kunt slepen */
+  .new-item-match{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:8px;
+    padding:10px;
+    border:1px dashed var(--border);
+    border-radius:10px;
+    text-align:center;
+  }
+  .new-item-match-text{
+    font-family:'Space Mono', monospace;
+    font-size:0.72rem;
+    color:var(--fg-muted);
+    line-height:1.4;
+  }
+
+  /* het uitschuifmenu naast de personen-tool: kies een al eerder gemaakte persoon
+     (bv. "moeder") om opnieuw neer te zetten, of maak een nieuwe aan */
+  .person-picker{
+    position:absolute;
+    left:100%;
+    margin-left:10px;
+    z-index:8;
+    width:180px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:8px;
+    box-shadow:0 6px 20px rgba(0,0,0,0.14);
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .person-picker-list{display:flex; flex-direction:column; gap:2px; max-height:180px; overflow-y:auto;}
+  .person-picker-item{
+    display:flex;
+    align-items:center;
+    gap:4px;
+    padding:3px 3px 3px 8px;
+    border-radius:8px;
+    font-family:'Space Mono', monospace;
+    font-size:0.76rem;
+    color:var(--fg);
+  }
+  .person-picker-item:hover{background:var(--bg);}
+  .person-picker-item-label{
+    flex:1;
+    min-width:0;
+    padding:4px 0;
+    cursor:grab;
+    touch-action:none;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .person-picker-item-delete{
+    flex:none;
+    width:22px;height:22px;
+    border:none;
+    border-radius:6px;
+    background:transparent;
+    color:var(--fg-muted);
+    font-size:0.95rem;
+    line-height:1;
+    cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .person-picker-item-delete:hover{background:var(--border); color:var(--fg);}
+  .person-picker-item-spotlight{
+    flex:none;
+    width:22px;height:22px;
+    border:none;
+    border-radius:6px;
+    background:transparent;
+    color:var(--fg-muted);
+    cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .person-picker-item-spotlight svg{width:14px;height:14px;}
+  .person-picker-item-spotlight:hover{background:var(--border); color:var(--fg);}
+  .person-picker-item-spotlight.active{background:#2f6fb0; color:#fff;}
+  .person-picker-hint{
+    font-family:'Space Mono', monospace;
+    font-size:0.68rem;
+    color:var(--fg-muted);
+    line-height:1.4;
+    padding:2px 6px 6px;
+  }
+  .person-picker-empty{
+    font-family:'Space Mono', monospace;
+    font-size:0.7rem;
+    color:var(--fg-muted);
+    padding:4px 6px 8px;
+    line-height:1.4;
+  }
+  .person-picker-new-row{border-top:1px solid var(--border); padding-top:6px;}
+  .person-picker-new-row input{
+    width:100%;
+    font-family:'Space Mono', monospace;
+    font-size:0.76rem;
+    padding:7px 8px;
+    border:1px solid var(--border);
+    border-radius:8px;
+    background:var(--bg);
+    color:var(--fg);
+  }
+  .person-picker-new-row input:focus-visible{outline:2px solid var(--fg); outline-offset:1px;}
+
+  /* the dashed box drawn around a note-group's bouwstenen, in world space so it pans/zooms along */
+  .groups-layer{position:absolute;top:0;left:0;}
+  .group-box{
+    position:absolute;
+    border:2px dashed var(--fg-muted);
+    border-radius:22px;
+    background:rgba(0,0,0,0.015);
+    pointer-events:none;
+  }
+  /* een "plek": dezelfde groepering, maar als cirkel/ovaal in plaats van een vierkant,
+     om te laten zien waar een verzameling bouwstenen zich afspeelt */
+  .group-box.plek{
+    border:2px solid var(--fg-muted);
+    border-radius:50%;
+    background:rgba(0,0,0,0.025);
+  }
+  /* de naam van een plek staat direct onder de cirkel, altijd zichtbaar in plaats van
+     verstopt achter een los icoontje */
+  .group-plek-label{
+    position:absolute;
+    bottom:-13px;
+    left:50%;
+    transform:translateX(-50%);
+    max-width:calc(100% + 60px);
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:3px 12px;
+    font-family:'Space Mono', monospace;
+    font-size:0.7rem;
+    font-weight:700;
+    color:var(--fg);
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    box-shadow:0 2px 6px rgba(0,0,0,0.1);
+    cursor:pointer;
+    pointer-events:auto;
+  }
+  .group-plek-label.placeholder{color:var(--fg-muted); border-style:dashed; font-weight:400;}
+  .group-note-badge{
+    position:absolute;
+    top:-15px;
+    left:16px;
+    width:28px;
+    height:28px;
+    border-radius:50%;
+    background:var(--surface);
+    border:1px solid var(--border);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    pointer-events:auto;
+    color:var(--fg-muted);
+  }
+  .group-note-badge:hover{color:var(--fg);border-color:var(--fg-muted);}
+  .group-note-badge.has-note{color:var(--fg);background:var(--omgeving);}
+  .group-note-badge svg{width:15px;height:15px;}
+  .plek-note-badge{left:50%; transform:translateX(-50%);}
+
+  .hex.group-pick{filter:drop-shadow(0 0 0 2.5px #2f6fb0) drop-shadow(0 0 6px rgba(47,111,176,0.45));}
+
+  /* left-side tool menu: a toggleable "verbind" tool. while active, clicking two
+     bouwstenen after each other draws a connection between them. */
+  .tool-controls{
+    position:absolute;
+    left:max(16px, env(safe-area-inset-left,0px));
+    top:50%;
+    transform:translateY(-50%);
+    z-index:5;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  .tool-btn{
+    width:36px;height:36px;
+    border-radius:10px;
+    border:1px solid var(--border);
+    background:var(--surface);
+    color:var(--fg-muted);
+    cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .tool-btn svg{width:18px;height:18px;}
+  .tool-btn:hover{border-color:var(--fg-muted); color:var(--fg);}
+  .tool-btn:focus-visible{outline:2px solid var(--fg); outline-offset:2px;}
+  .tool-btn.active{background:var(--fg); border-color:var(--fg); color:var(--bg);}
+  #personToolBtn{cursor:pointer;}
+
+  /* a short beschrijving of what each toolbar-knop does, shown to its right on hover */
+  #toolTooltip{
+    position:absolute;
+    left:100%;
+    transform:translate(10px, -50%);
+    background:var(--fg);
+    color:var(--bg);
+    font-family:'Space Mono', monospace;
+    font-size:0.7rem;
+    font-weight:700;
+    padding:6px 10px;
+    border-radius:8px;
+    white-space:nowrap;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .12s ease;
+    z-index:30;
+  }
+  #toolTooltip::after{
+    content:'';
+    position:absolute;
+    right:100%;
+    top:50%;
+    transform:translateY(-50%);
+    border:5px solid transparent;
+    border-right-color:var(--fg);
+  }
+  #toolTooltip.visible{opacity:1;}
+
+  /* verbind-tool: while active, every placed bouwsteen shows a plusje on each of its 6
+     kanten, a bit clear of the hexagon itself — drag from one to another to draw a
+     directional pijl. the plusje you're hovering near while dragging turns into a
+     kruisje, so it's clear exactly where the pijl will attach. */
+  .edge-handles-layer{position:absolute; top:0; left:0; z-index:6;}
+  .edge-handle{
+    position:absolute;
+    width:16px; height:16px;
+    margin:-8px 0 0 -8px;
+    cursor:crosshair;
+    touch-action:none;
+  }
+  .edge-handle::before, .edge-handle::after{
+    content:'';
+    position:absolute;
+    background:var(--fg);
+    opacity:0.8;
+    border-radius:1px;
+    top:50%; left:50%;
+  }
+  .edge-handle::before{width:10px; height:2px; transform:translate(-50%,-50%);}
+  .edge-handle::after{width:2px; height:10px; transform:translate(-50%,-50%);}
+  .edge-handle.target-near{transform:rotate(45deg) scale(1.25);}
+  .edge-handle.target-near::before, .edge-handle.target-near::after{opacity:1; background:#2f6fb0;}
+  .conn-draft{pointer-events:none;}
+
+  /* groep-tool: only the bouwstenen picked for the group stay fully visible, the rest fades */
+  .canvas.group-mode .hex.placed{cursor:pointer;}
+  .canvas.group-mode .hex.placed{opacity:0.3; transition:opacity 0.15s ease;}
+  .canvas.group-mode .hex.placed.group-pick{opacity:1;}
+
+  /* uitlichten: dimt de rest van het canvas, behalve wat uitgelicht is */
+  .canvas.spotlight-mode .hex.placed,
+  .canvas.spotlight-mode .person-marker,
+  .canvas.spotlight-mode .group-box{opacity:0.25; transition:opacity 0.2s ease;}
+  .canvas.spotlight-mode .spotlight-hit{opacity:1 !important;}
+
+  /* personen: placed on the vertex where several bouwstenen meet, Catan-style,
+     instead of inside a grid cell */
+  .person-marker{
+    position:absolute;
+    width:26px;height:26px;
+    border-radius:50%;
+    background:var(--personen);
+    border:1.5px solid var(--hex-line);
+    display:flex;align-items:center;justify-content:center;
+    transform:translate(-50%, -50%);
+    cursor:grab;
+    touch-action:none;
+    z-index:4;
+  }
+  .person-marker svg{width:14px;height:14px;}
+  .person-marker:hover{filter:drop-shadow(0 0 0 2.5px #2f6fb0);}
+  .person-marker.selected{filter:drop-shadow(0 0 0 2.5px #2f6fb0) drop-shadow(0 0 6px rgba(47,111,176,0.45));}
+  .person-marker.dragging{opacity:0.6; cursor:grabbing;}
+  .vertex-preview{
+    position:absolute;
+    width:26px;height:26px;
+    border-radius:50%;
+    background:transparent;
+    border:1.5px dashed var(--fg-muted);
+    transform:translate(-50%, -50%);
+    pointer-events:none;
+    z-index:4;
+  }
+
+  /* saved-patronen modal: save the current canvas under a name, and reopen it later */
+  .patterns-modal{
+    position:fixed;
+    inset:0;
+    z-index:50;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+  }
+  .patterns-backdrop{position:absolute;inset:0;background:rgba(20,18,14,0.35);}
+  .patterns-panel{
+    position:relative;
+    z-index:1;
+    width:min(420px, 100%);
+    max-height:min(560px, 86vh);
+    display:flex;
+    flex-direction:column;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:16px;
+    padding:18px;
+    box-shadow:0 10px 32px rgba(0,0,0,0.18);
+  }
+  .patterns-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+  .patterns-header h2{
+    font-family:'Space Mono', monospace;
+    font-size:0.95rem;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+    margin:0;
+    color:var(--fg);
+  }
+  .patterns-save-row{display:flex;gap:8px;margin-bottom:14px;}
+  .patterns-save-row input{
+    flex:1;
+    min-width:0;
+    font-family:'Space Mono', monospace;
+    font-size:0.8rem;
+    padding:9px 10px;
+    border:1px solid var(--border);
+    border-radius:9px;
+    background:var(--bg);
+    color:var(--fg);
+  }
+  .patterns-save-row input:focus-visible{outline:2px solid var(--fg); outline-offset:1px;}
+  .patterns-list{
+    overflow-y:auto;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  .patterns-empty{
+    font-family:'Space Mono', monospace;
+    font-size:0.78rem;
+    color:var(--fg-muted);
+    text-align:center;
+    padding:18px 4px;
+  }
+  .pattern-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:10px 12px;
+    border:1px solid var(--border);
+    border-radius:10px;
+  }
+  .pattern-row-info{flex:1; min-width:0;}
+  .pattern-row-name{
+    font-family:'Space Mono', monospace;
+    font-size:0.82rem;
+    font-weight:700;
+    color:var(--fg);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .pattern-row-meta{
+    font-family:'Space Mono', monospace;
+    font-size:0.68rem;
+    color:var(--fg-muted);
+    margin-top:2px;
+  }
+  .pattern-row-actions{display:flex;gap:6px;flex:none;}
+
+  /* hidden reference hex used only to measure the current hex size for grid math */
+  #hexRef{position:fixed;top:-9999px;left:-9999px;visibility:hidden;}
+
+  /* the hex is just its pastel fill; the thin black line is drawn by a separate SVG layer
+     (outlines.js below) so it can be left out exactly where two hexes touch */
+  .hex{
+    width:118px;
+    height:102px;
+    clip-path:polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:3px;
+    text-align:center;
+    padding:0 14px;
+    font-family:'Space Mono', monospace;
+    font-weight:700;
+    font-size:0.85rem;
+    color:var(--fg);
+    line-height:1.4;
+    letter-spacing:0.03em;
+    user-select:none;
+    touch-action:none;
+    cursor:grab;
+    flex:none;
+  }
+  /* bouwstenen leaving the dock keep the same text-to-hex proportions they had there,
+     instead of inheriting the base .hex font-size meant for the short category labels */
+  .hex.ghost{position:fixed;z-index:50;pointer-events:none;opacity:0.92;font-size:0.64rem;}
+  .hex.placed{position:absolute;cursor:grab;font-size:0.64rem;}
+  .hex.dragging{opacity:0.55;}
+  .hex.selected{filter:drop-shadow(0 0 0 2px var(--fg)) drop-shadow(0 0 7px rgba(0,0,0,0.3));}
+
+  .hex[data-cat="lijf"]{background:var(--lijf);}
+  .hex[data-cat="jij"]{background:var(--jij);}
+  .hex[data-cat="anderen"]{background:var(--anderen);}
+  .hex[data-cat="omgeving"]{background:var(--omgeving);}
+  .hex[data-cat="krachten"]{background:var(--krachten);}
+  .hex[data-cat="personen"]{background:var(--personen);}
+
+
+  /* the category menu: a simple pill-shaped bar with icon + text per categorie, no hexagon
+     chrome — hovering a categorie with its own bouwstenen shows its guiding question (one
+     shared tooltip, positioned via JS), clicking opens the item panel below */
+  .category-bar-wrap{
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    gap:8px;
+    margin-top:8px;
+  }
+  /* los knopje naast de bouwstenenbank om een eigen bouwsteen aan te maken: de knop zelf
+     is rond (zoals de andere losse knoppen), met daarbinnen een hexagon-met-plusje icoon
+     zodat je 'm meteen aan de bouwstenenbank koppelt */
+  .add-item-btn{
+    flex:none;
+    width:38px;height:38px;
+    border-radius:50%;
+    border:1px solid var(--border);
+    padding:0;
+    background:var(--bg);
+    color:var(--fg-muted);
+    cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .add-item-btn svg{width:20px;height:20px;}
+  .add-item-btn:hover{background:var(--surface); color:var(--fg); border-color:var(--fg-muted);}
+  .add-item-btn:focus-visible{outline:2px solid var(--fg); outline-offset:2px;}
+
+  /* suggesties terwijl je typt in het +-bouwsteen-paneel */
+  .new-item-suggestions{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .new-item-suggestion{
+    text-align:left;
+    font-family:'Space Mono', monospace;
+    font-size:0.74rem;
+    padding:7px 9px;
+    border:1px solid var(--border);
+    border-radius:8px;
+    background:var(--bg);
+    color:var(--fg);
+    cursor:pointer;
+    display:flex;
+    justify-content:space-between;
+    gap:8px;
+  }
+  .new-item-suggestion:hover{background:var(--surface); border-color:var(--fg-muted);}
+  .new-item-suggestion .suggestion-cat{color:var(--fg-muted); font-size:0.66rem; flex:none;}
+  .category-bar{
+    display:flex;
+    align-items:center;
+    gap:2px;
+    background:var(--bg);
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:6px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.05);
+    max-width:100%;
+    overflow-x:auto;
+    scrollbar-width:none;
+  }
+  .category-bar::-webkit-scrollbar{display:none;}
+  .category-item{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    flex:none;
+    font-family:'Space Mono', monospace;
+    font-size:0.8rem;
+    font-weight:400;
+    color:var(--fg);
+    background:none;
+    border:none;
+    border-radius:999px;
+    padding:10px 16px;
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  .category-item:hover{background:var(--surface);}
+  .category-item:focus-visible{outline:2px solid var(--fg); outline-offset:-2px;}
+  .category-icon{width:18px;height:18px;flex:none;color:var(--fg-muted);}
+  .category-icon svg{width:100%;height:100%;display:block;}
+  .category-item{transition:background-color .12s ease;}
+
+  /* hovering (or focusing) a categorie's knop lights it up in its own bouwsteen-kleur */
+  .category-item[data-cat="lijf"]:hover, .category-item[data-cat="lijf"]:focus-visible{background:var(--lijf);}
+  .category-item[data-cat="jij"]:hover, .category-item[data-cat="jij"]:focus-visible{background:var(--jij);}
+  .category-item[data-cat="anderen"]:hover, .category-item[data-cat="anderen"]:focus-visible{background:var(--anderen);}
+  .category-item[data-cat="omgeving"]:hover, .category-item[data-cat="omgeving"]:focus-visible{background:var(--omgeving);}
+  .category-item[data-cat="krachten"]:hover, .category-item[data-cat="krachten"]:focus-visible{background:var(--krachten);}
+  #hexTooltip{
+    position:absolute;
+    transform:translate(-50%, -100%) translateY(-10px);
+    background:var(--fg);
+    color:var(--bg);
+    font-family:'Space Mono', monospace;
+    font-size:0.7rem;
+    font-weight:700;
+    padding:6px 10px;
+    border-radius:8px;
+    white-space:nowrap;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .15s ease;
+    z-index:30;
+  }
+  #hexTooltip::after{
+    content:'';
+    position:absolute;
+    top:100%;
+    left:50%;
+    transform:translateX(-50%);
+    border:5px solid transparent;
+    border-top-color:var(--fg);
+  }
+  #hexTooltip.visible{opacity:1;}
+
+  /* the sub-item panel: a category's own bouwstenen, revealed above the dock row */
+  .item-panel{
+    max-height:0;
+    opacity:0;
+    overflow:hidden;
+    background:var(--bg);
+    border:1px solid var(--border);
+    border-radius:20px;
+    box-shadow:0 2px 10px rgba(0,0,0,0.05);
+    transition:max-height .25s ease, opacity .2s ease, padding .25s ease;
+  }
+  .item-panel.open{
+    max-height:min(520px, 60vh);
+    opacity:1;
+    overflow-y:auto;
+    padding:14px 14px 30px;
+  }
+  .item-panel-question{
+    font-family:'Space Mono', monospace;
+    font-size:0.8rem;
+    font-weight:700;
+    color:var(--fg-muted);
+    text-align:center;
+    margin:4px 0 12px;
+  }
+  .item-panel-grid{
+    display:flex;
+    flex-wrap:nowrap;
+    justify-content:flex-start;
+    gap:10px;
+    overflow-x:auto;
+    overflow-y:hidden;
+    padding:4px 4px 10px;
+    scroll-snap-type:x proximity;
+  }
+  .item-panel-grid > .hex.item{flex:none; scroll-snap-align:start;}
+  .item-panel-grid.grouped{
+    flex-direction:column;
+    align-items:stretch;
+    flex-wrap:nowrap;
+    gap:18px;
+    overflow-x:visible;
+    overflow-y:visible;
+    padding:0;
+  }
+  .item-group{
+    display:flex;
+    flex-direction:column;
+    align-items:stretch;
+    gap:10px;
+  }
+  .item-group + .item-group{
+    padding-top:16px;
+    border-top:1px dashed var(--border);
+  }
+  .item-group-label{
+    font-family:'Space Mono', monospace;
+    font-size:0.72rem;
+    font-weight:700;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    text-align:center;
+    color:var(--fg-muted);
+  }
+  /* one horizontally scrollable row per sub-categorie, instead of wrapping onto
+     multiple rows, so every sub-categorie stays a single scannable strip */
+  .item-group-row{
+    display:flex;
+    flex-wrap:nowrap;
+    justify-content:flex-start;
+    gap:10px;
+    overflow-x:auto;
+    overflow-y:hidden;
+    padding:4px 4px 10px;
+    scroll-snap-type:x proximity;
+  }
+  .item-group-row .hex.item{flex:none; scroll-snap-align:start;}
+  .hex.item{width:128px;height:111px;font-size:0.64rem;padding:0 12px;}
+
+  .snap-preview{
+    position:absolute;
+    clip-path:polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+    background:var(--fg);
+    opacity:0.12;
+    pointer-events:none;
+  }
+
+
+  /* bottom dock: no background strip of its own — the category pill and the item panel
+     each float as their own card directly over the canvas */
+  .dock{
+    position:fixed;
+    left:0; right:0; bottom:0;
+    z-index:20;
+    pointer-events:none;
+    padding:10px max(16px, env(safe-area-inset-right,0px)) max(10px, env(safe-area-inset-bottom,0px)) max(16px, env(safe-area-inset-left,0px));
+  }
+  .dock > *{pointer-events:auto;}
+  @media (max-width:520px){
+    .topbar h1{font-size:0.88rem;}
+    .category-item{padding:8px 12px; font-size:0.74rem; gap:6px;}
+    .category-icon{width:16px;height:16px;}
+    .empty-hint-callout{display:none;}
+  }
+</style>
+
+<div id="hexRef" class="hex" aria-hidden="true"></div>
+
+
+<div class="canvas" id="canvas">
+  <div class="world" id="world">
+    <div class="groups-layer" id="groupsLayer"></div>
+    <svg class="connections" id="connections"></svg>
+    <svg class="outlines" id="outlines"></svg>
+    <div class="edge-handles-layer" id="edgeHandlesLayer"></div>
+  </div>
+  <div class="empty-hint">Sleep hieronder een bouwsteen naar het canvas om te beginnen. Versleep de lege ruimte om rond te kijken, en knijp of scroll om te zoomen.</div>
+  <div class="empty-hint-callout empty-hint-tools">&larr; 2. Met deze tools geef je betekenis aan de relaties en de diepere laag tussen bouwstenen.</div>
+  <div class="empty-hint-callout empty-hint-category">1. De bouwstenenbank helpt je bouwen. &darr;</div>
+  <div class="tool-controls">
+    <button type="button" class="tool-btn" id="connectToolBtn" aria-pressed="false" aria-label="Verbind-tool: sleep een pijl vanaf een kant van een bouwsteen naar een andere" data-tooltip="Verbind: trek een pijl tussen twee bouwstenen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 12h14"/>
+        <path d="M12.5 6.5 19 12l-6.5 5.5"/>
+      </svg>
+    </button>
+    <button type="button" class="tool-btn" id="personToolBtn" aria-pressed="false" aria-label="Persoon-tool: kies of maak een persoon, en sleep deze naar een kruising van bouwstenen" data-tooltip="Persoon: kies of maak een persoon, sleep naar een kruising">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="10" cy="8" r="3"/>
+        <path d="M4.5 20c0-3.3 2.5-6 5.5-6s5.5 2.7 5.5 6"/>
+        <path d="M18 7.5v4.5M15.7 9.75h4.6"/>
+      </svg>
+    </button>
+    <button type="button" class="tool-btn" id="plekToolBtn" aria-pressed="false" aria-label="Plek-tool: kies of maak een plek, selecteer bouwstenen en maak er een cirkel van" data-tooltip="Plek: kies of maak een plek, selecteer bouwstenen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 21s-7-6.3-7-11.5A7 7 0 0 1 19 9.5C19 14.7 12 21 12 21Z"/>
+        <circle cx="12" cy="9.5" r="2.4"/>
+      </svg>
+    </button>
+    <button type="button" class="tool-btn" id="groupToolBtn" aria-pressed="false" aria-label="Groep-tool: klik bouwstenen aan om ze in een kader te groeperen" data-tooltip="Groep: selecteer bouwstenen en zet er een kader omheen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3.5" y="3.5" width="8" height="8" rx="1.6"/>
+        <rect x="12.5" y="12.5" width="8" height="8" rx="1.6"/>
+        <path d="M11.5 7.5h3a2 2 0 0 1 2 2v3"/>
+      </svg>
+    </button>
+    <div id="toolTooltip" role="tooltip"></div>
+    <div class="person-picker" id="personPicker" hidden>
+      <div class="person-picker-list" id="personPickerList"></div>
+      <div class="person-picker-new-row">
+        <input type="text" id="personPickerInput" placeholder="Nieuwe persoon...">
+      </div>
+    </div>
+    <div class="person-picker" id="plekPicker" hidden>
+      <div class="person-picker-hint" id="plekPickerHint"></div>
+      <div class="person-picker-list" id="plekPickerList"></div>
+      <div class="person-picker-new-row">
+        <input type="text" id="plekPickerInput" placeholder="Nieuwe plek...">
+      </div>
+    </div>
+  </div>
+  <div class="group-toolbar" id="groupToolbar" hidden>
+    <span class="group-toolbar-count" id="groupToolbarCount"></span>
+    <button type="button" class="btn btn-small" id="groupNoteBtn">+ Groep</button>
+    <button type="button" class="btn btn-small btn-icon" id="groupCancelBtn" aria-label="Selectie wissen">&times;</button>
+  </div>
+  <div class="group-note-panel" id="groupNotePanel" hidden>
+    <textarea id="groupNoteInput" placeholder="Schrijf een notitie bij deze bouwstenen..."></textarea>
+    <div class="group-note-actions">
+      <button type="button" class="btn btn-small btn-danger" id="groupNoteDelete" hidden>Verwijder groep</button>
+      <div class="group-note-actions-right">
+        <button type="button" class="btn btn-small" id="groupNoteCancel">Annuleren</button>
+        <button type="button" class="btn btn-small btn-primary" id="groupNoteSave">Opslaan</button>
+      </div>
+    </div>
+  </div>
+  <div class="person-name-panel" id="personNamePanel" hidden>
+    <input type="text" id="personNameInput" placeholder="Wie representeert deze persoon?">
+    <div class="group-note-actions">
+      <button type="button" class="btn btn-small btn-danger" id="personNameDelete">Verwijderen</button>
+      <div class="group-note-actions-right">
+        <button type="button" class="btn btn-small" id="personNameCancel">Annuleren</button>
+        <button type="button" class="btn btn-small btn-primary" id="personNameSave">Opslaan</button>
+      </div>
+    </div>
+  </div>
+  <div class="person-name-panel" id="placeNamePanel" hidden>
+    <input type="text" id="placeNameInput" placeholder="Naam van deze plek">
+    <div class="group-note-actions">
+      <button type="button" class="btn btn-small btn-danger" id="placeNameDelete">Verwijderen</button>
+      <div class="group-note-actions-right">
+        <button type="button" class="btn btn-small" id="placeNameCancel">Annuleren</button>
+        <button type="button" class="btn btn-small btn-primary" id="placeNameSave">Opslaan</button>
+      </div>
+    </div>
+  </div>
+  <div class="person-name-panel" id="newItemPanel" hidden>
+    <input type="text" id="newItemNameInput" placeholder="Naam van de nieuwe bouwsteen">
+    <div class="new-item-suggestions" id="newItemSuggestions" hidden></div>
+    <div class="select-wrap">
+      <select id="newItemCategorySelect">
+        <option value="lijf">Lijf</option>
+        <option value="jij">Jij</option>
+        <option value="anderen">Anderen</option>
+        <option value="omgeving">Omgeving</option>
+        <option value="krachten">Krachten</option>
+      </select>
+      <svg class="select-wrap-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 9.5 12 15l6-5.5"/>
+      </svg>
+    </div>
+    <div class="new-item-match" id="newItemMatch" hidden>
+      <div class="new-item-match-text" id="newItemMatchText"></div>
+    </div>
+    <div class="group-note-actions">
+      <div class="group-note-actions-right" style="margin-left:0;">
+        <button type="button" class="btn btn-small" id="newItemCancel">Annuleren</button>
+        <button type="button" class="btn btn-small btn-primary" id="newItemCreate">Aanmaken</button>
+      </div>
+    </div>
+  </div>
+  <div class="zoom-controls">
+    <button class="zoom-btn" id="zoomInBtn" type="button" aria-label="Inzoomen">+</button>
+    <button class="zoom-btn" id="zoomOutBtn" type="button" aria-label="Uitzoomen">&minus;</button>
+    <button class="zoom-btn" id="centerBtn" type="button" aria-label="Centreren" style="font-size:1rem;">&#9678;</button>
+  </div>
+  <div class="trash-zone" id="trashZone" aria-label="Sleep een bouwsteen hierheen om te verwijderen">
+    <svg class="trash-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4.5 7.5h15"/>
+      <path d="M9.2 7.2V5.8c0-.7.6-1.3 1.3-1.3h3c.7 0 1.3.6 1.3 1.3v1.4"/>
+      <path d="M6.3 7.5l1 11.3c.06.9.8 1.6 1.7 1.6h5.9c.9 0 1.64-.7 1.7-1.6l1-11.3"/>
+    </svg>
+  </div>
+</div>
+
+<div class="topbar">
+  <h1>PATRONENLAB CANVAS</h1>
+  <div class="topbar-actions">
+    <button class="btn" id="patternsBtn" type="button">Patronen</button>
+    <button class="btn" id="clearBtn" type="button">Wis canvas</button>
+  </div>
+</div>
+
+<div class="patterns-modal" id="patternsModal" hidden>
+  <div class="patterns-backdrop" id="patternsBackdrop"></div>
+  <div class="patterns-panel" role="dialog" aria-label="Opgeslagen patronen">
+    <div class="patterns-header">
+      <h2>Patronen</h2>
+      <button type="button" class="btn btn-small btn-icon" id="patternsCloseBtn" aria-label="Sluiten">&times;</button>
+    </div>
+    <div class="patterns-save-row">
+      <input type="text" id="patternNameInput" placeholder="Naam voor dit patroon...">
+      <button type="button" class="btn btn-small btn-primary" id="patternSaveBtn">Huidige opslaan</button>
+    </div>
+    <div class="patterns-list" id="patternsList"></div>
+  </div>
+</div>
+
+<div class="dock" id="dock">
+  <div id="hexTooltip"></div>
+  <div class="item-panel" id="itemPanel" hidden>
+    <div class="item-panel-question" id="itemPanelQuestion"></div>
+    <div class="item-panel-grid" id="itemPanelGrid"></div>
+  </div>
+  <div class="category-bar-wrap">
+    <div class="category-bar" id="categoryBar">
+      <button type="button" class="category-item" data-cat="lijf" data-label="Lijf">
+        <span class="category-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="7.5" r="3"/>
+          <path d="M5.5 19.5c0-3.6 2.9-6.5 6.5-6.5s6.5 2.9 6.5 6.5"/>
+        </svg></span>
+        <span class="category-text">Lijf</span>
+      </button>
+      <button type="button" class="category-item" data-cat="jij" data-label="Jij">
+        <span class="category-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 19s-6.8-4.3-6.8-9.2A4.1 4.1 0 0 1 12 7.1a4.1 4.1 0 0 1 6.8 2.7C18.8 14.7 12 19 12 19Z"/>
+        </svg></span>
+        <span class="category-text">Jij</span>
+      </button>
+      <button type="button" class="category-item" data-cat="anderen" data-label="Anderen">
+        <span class="category-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8.5" cy="9.5" r="2.6"/>
+          <circle cx="16.5" cy="9.5" r="2.6"/>
+          <path d="M3.5 19c.5-3 2.6-5 5-5"/>
+          <path d="M20.5 19c-.5-3-2.6-5-5-5"/>
+        </svg></span>
+        <span class="category-text">Anderen</span>
+      </button>
+      <button type="button" class="category-item" data-cat="omgeving" data-label="Omgeving">
+        <span class="category-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4.5 11 12 5l7.5 6"/>
+          <path d="M6.5 9.8V19h11V9.8"/>
+        </svg></span>
+        <span class="category-text">Omgeving</span>
+      </button>
+      <button type="button" class="category-item" data-cat="krachten" data-label="Krachten">
+        <span class="category-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3.5 13.6 9l5.5.9-4 3.9.9 5.5L12 16.8l-4.9 2.5.9-5.5-4-3.9 5.5-.9Z"/>
+        </svg></span>
+        <span class="category-text">Krachten</span>
+      </button>
+    </div>
+    <button type="button" class="add-item-btn" id="addItemBtn" aria-label="Nieuwe bouwsteen aanmaken">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6.5 2.5H17.5L23 12L17.5 21.5H6.5L1 12Z"/>
+        <path d="M12 8v8M8 12h8"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var canvas = document.getElementById('canvas');
+  var world = document.getElementById('world');
+  var svg = document.getElementById('connections');
+  var outlinesSvg = document.getElementById('outlines');
+  var edgeHandlesLayer = document.getElementById('edgeHandlesLayer');
+  var OUTLINE_WIDTH = 2.4;
+  var clearBtn = document.getElementById('clearBtn');
+  var centerBtn = document.getElementById('centerBtn');
+  var patternsBtn = document.getElementById('patternsBtn');
+  var patternsModal = document.getElementById('patternsModal');
+  var patternsBackdrop = document.getElementById('patternsBackdrop');
+  var patternsCloseBtn = document.getElementById('patternsCloseBtn');
+  var patternNameInput = document.getElementById('patternNameInput');
+  var patternSaveBtn = document.getElementById('patternSaveBtn');
+  var patternsList = document.getElementById('patternsList');
+  var PATTERNS_KEY = 'bouwstenen-patronen-v1';
+  var zoomInBtn = document.getElementById('zoomInBtn');
+  var zoomOutBtn = document.getElementById('zoomOutBtn');
+  var trashZone = document.getElementById('trashZone');
+  var connectToolBtn = document.getElementById('connectToolBtn');
+  var connectMode = false;
+  var toolTooltip = document.getElementById('toolTooltip');
+  var groupToolBtn = document.getElementById('groupToolBtn');
+  var groupMode = false;
+  var personToolBtn = document.getElementById('personToolBtn');
+  // `persons` is het register van personen-identiteiten (bv. "moeder"), los van waar ze
+  // staan. `personMarkers` zijn de daadwerkelijk neergezette plekjes op een kruising
+  // (Catan-stijl) — meerdere markers kunnen naar dezelfde persoon verwijzen.
+  var persons = [];          // [{id, label}]
+  var personMarkers = [];    // [{id, personId, x, y}]
+  var personOccupied = {};   // vertex key ("roundedX|roundedY") -> personMarker id
+  var personNamePanel = document.getElementById('personNamePanel');
+  var personNameInput = document.getElementById('personNameInput');
+  var personNameDelete = document.getElementById('personNameDelete');
+  var personNameCancel = document.getElementById('personNameCancel');
+  var personNameSave = document.getElementById('personNameSave');
+  var editingPersonMarkerId = null;
+  var vertexPreview = null;
+
+  // het uitschuifmenu bij de personen-tool: kies een al eerder gemaakte persoon om
+  // opnieuw neer te zetten, of maak een nieuwe aan
+  var personPicker = document.getElementById('personPicker');
+  var personPickerList = document.getElementById('personPickerList');
+  var personPickerInput = document.getElementById('personPickerInput');
+  var personPickerOpen = false;
+  var PERSON_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.2"/><path d="M6 19c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg>';
+  var SPOTLIGHT_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6l1.5 5-1.5 1.2V17a3 3 0 0 1-6 0v-7.8L7.5 8 9 3Z"/><path d="M10.5 17h3"/></svg>';
+
+  // de plek-tool: een apart register van herbruikbare plek-identiteiten ("school", "thuis"),
+  // net als personen. Een plek wordt echter niet gesleept naar een kruising, maar toegekend
+  // aan een selectie bouwstenen (zoals de groep-tool al deed) die dan als cirkel verschijnt.
+  var plekToolBtn = document.getElementById('plekToolBtn');
+  var plekMode = false;
+  var places = [];  // [{id, label}]
+  var plekPicker = document.getElementById('plekPicker');
+  var plekPickerHint = document.getElementById('plekPickerHint');
+  var plekPickerList = document.getElementById('plekPickerList');
+  var plekPickerInput = document.getElementById('plekPickerInput');
+  var plekPickerOpen = false;
+  var placeNamePanel = document.getElementById('placeNamePanel');
+  var placeNameInput = document.getElementById('placeNameInput');
+  var placeNameDelete = document.getElementById('placeNameDelete');
+  var placeNameCancel = document.getElementById('placeNameCancel');
+  var placeNameSave = document.getElementById('placeNameSave');
+  var editingPlaceId = null;
+
+  // uitlichten: dimt de rest van het canvas en licht alleen de gekozen persoon of plek uit
+  var spotlight = null; // null of {type:'person'|'place', id}
+
+  // eigen bouwstenen: een los register naast de vaste CATEGORY_ITEMS, bewaard onder een
+  // eigen sleutel zodat ze blijven bestaan ook als het canvas zelf gewist wordt
+  var addItemBtn = document.getElementById('addItemBtn');
+  var newItemPanel = document.getElementById('newItemPanel');
+  var newItemNameInput = document.getElementById('newItemNameInput');
+  var newItemSuggestions = document.getElementById('newItemSuggestions');
+  var newItemCategorySelect = document.getElementById('newItemCategorySelect');
+  var newItemMatch = document.getElementById('newItemMatch');
+  var newItemMatchText = document.getElementById('newItemMatchText');
+  var newItemCancel = document.getElementById('newItemCancel');
+  var newItemCreate = document.getElementById('newItemCreate');
+  var CUSTOM_ITEMS_KEY = 'bouwstenen-eigen-items-v1';
+  var customItems = { lijf: [], jij: [], anderen: [], omgeving: [], krachten: [] };
+
+  function isOverTrash(x, y){
+    if (trashZone.classList.contains('suppressed')) return false;
+    var r = trashZone.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
+  // de prullenbak staat alleen in beeld als er geen ander menu of toolbox open staat
+  function updateTrashVisibility(){
+    var anyOpen = !!openCategory || !patternsModal.hidden || !groupNotePanel.hidden ||
+      !personNamePanel.hidden || !groupToolbar.hidden || personPickerOpen ||
+      plekPickerOpen || !placeNamePanel.hidden || !newItemPanel.hidden;
+    trashZone.classList.toggle('suppressed', anyOpen);
+  }
+
+  var groupsLayer = document.getElementById('groupsLayer');
+  var groupToolbar = document.getElementById('groupToolbar');
+  var groupToolbarCount = document.getElementById('groupToolbarCount');
+  var groupNoteBtn = document.getElementById('groupNoteBtn');
+  var groupCancelBtn = document.getElementById('groupCancelBtn');
+  var groupNotePanel = document.getElementById('groupNotePanel');
+  var groupNoteInput = document.getElementById('groupNoteInput');
+  var groupNoteDelete = document.getElementById('groupNoteDelete');
+  var groupNoteCancel = document.getElementById('groupNoteCancel');
+  var groupNoteSave = document.getElementById('groupNoteSave');
+  var editingGroupKind = null; // 'groep' (vierkant) of 'plek' (cirkel)
+  var NOTE_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4h9l3 3v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="M9 10h6M9 14h6M9 18h3"/></svg>';
+  var PLEK_ICON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-6.3-7-11.5A7 7 0 0 1 19 9.5C19 14.7 12 21 12 21Z"/><circle cx="12" cy="9.5" r="2.4"/></svg>';
+  var dock = document.getElementById('dock');
+  var categoryBar = document.getElementById('categoryBar');
+  var itemPanel = document.getElementById('itemPanel');
+  var itemPanelQuestion = document.getElementById('itemPanelQuestion');
+  var itemPanelGrid = document.getElementById('itemPanelGrid');
+  var hexTooltip = document.getElementById('hexTooltip');
+  var hexRef = document.getElementById('hexRef');
+  var openCategory = null;
+
+  // categories with their own bouwstenen underneath; the category tile itself is not a
+  // bouwsteen then, it just asks its guiding question and opens the list below
+  var CATEGORY_QUESTIONS = {
+    lijf: 'Wat merkt je lijf?',
+    jij: 'Wat gebeurt er bij jou?',
+    anderen: 'Wat gebeurt er tussen jou en anderen?',
+    omgeving: 'Wat speelt er om je heen?'
+  };
+  var CATEGORY_ITEMS = {
+    lijf: [
+      'slecht slapen', 'dag-nachtritme kwijt', 'weinig energie', 'gespannen of onrustig lijf',
+      'hartkloppingen of benauwd', 'hoofdpijn of buikpijn', 'misselijk of overgeven', 'overprikkeld',
+      'moeite met concentreren', 'eetlust in de war', 'lijf verandert (puberteit/menstruatie)',
+      'ziek zijn of beperking', 'medicijnen en bijwerkingen', 'pijn of ongemak bij seks*'
+    ],
+    jij: [
+      { group: 'voelen', items: [
+        'somber', 'angstig of bang', 'paniek', 'snel boos', 'leeg of verdoofd', 'schaamte',
+        'schuldgevoel', 'onzeker', 'eenzaam', 'machteloos', 'geen hoop', 'verdriet of rouw',
+        'verveeld', 'stemming slaat snel om'
+      ] },
+      { group: 'ervaren', items: [
+        'herbelevingen', 'dingen horen of zien', 'chaos in mijn hoofd', 'niet weten wie ik ben',
+        'twijfel over gender'
+      ] },
+      { group: 'denken', items: [
+        'ik ben niet goed genoeg', 'het is mijn schuld', 'ik moet het perfect doen', 'ik ben tot last',
+        'ik moet het alleen doen', 'niemand begrijpt mij', 'ik wil er niet meer zijn*'
+      ] },
+      { group: 'doen', items: [
+        'piekeren', 'vergelijken', 'streng zijn voor mezelf', 'snel opgeven', 'uitstellen',
+        'steeds moeten controleren', 'eerst doen, dan denken', 'gamen of scrollen', 'drinken of blowen',
+        'weinig eten', 'eetbuien', 'mezelf pijn doen*'
+      ] }
+    ],
+    anderen: [
+      { group: 'jij naar anderen', items: [
+        'vermijden', 'niks vertellen', 'ruzie maken', 'slaan of kapotmaken', 'moeilijk nee zeggen',
+        'geen hulp vragen', 'zorgen voor een ander', 'weglopen'
+      ] },
+      { group: 'anderen naar jou', items: [
+        'gepest worden', 'buitengesloten worden', 'afgewezen worden', 'kritiek krijgen',
+        'gecontroleerd worden', 'gestraft worden', 'alles wordt overgenomen', 'ouders hebben weinig tijd',
+        'bedreigd worden*', 'iemand ging over mijn grens*', 'groepsdruk'
+      ] },
+      { group: 'omstandigheden', items: [
+        'ruzie tussen ouders', 'ouders uit elkaar', 'onveilig thuis', 'zorgen om mijn ouder',
+        'gedoe over regels', 'iemand verloren', 'liefdesverdriet'
+      ] },
+      { group: 'overtuigingen', items: [
+        'daar praten we niet over', 'met ons gaat het goed', 'anderen zijn niet te vertrouwen'
+      ] }
+    ],
+    omgeving: [
+      'druk op school', 'school past niet', 'niet naar school', 'geldzorgen', 'geen eigen plek thuis',
+      'niet thuis wonen', 'vaak verhuizen', 'veel drukte thuis', 'weinig te doen na school',
+      'onveilige buurt', 'nare dingen online', 'altijd bereikbaar moeten zijn', 'discriminatie',
+      'tussen twee culturen', 'nieuw in Nederland', 'gedoe met politie of justitie',
+      'gedoe met hulpverlening', 'zorgen over de toekomst', 'plekken vermijden'
+    ],
+    krachten: [
+      { group: 'lijf', items: [
+        'goed slapen', 'sporten of bewegen', 'mijn lijf rustig kunnen krijgen'
+      ] },
+      { group: 'ik', items: [
+        'humor', 'doorzetten', 'creatief of muziek', 'iets waar ik goed in ben', 'weten wat ik wil',
+        'mezelf kunnen troosten'
+      ] },
+      { group: 'anderen', items: [
+        'iemand bij wie ik terecht kan', 'fijne vrienden', 'steun thuis', 'mentor of coach die me ziet',
+        'huisdier', 'club of sport', 'fijne plek', 'buiten zijn of natuur', 'iets leuks op school'
+      ] }
+    ]
+  };
+  var STORAGE_KEY = 'bouwstenen-canvas-v5';
+  var occupied = {};       // "col,row" -> hex id
+  var connections = [];    // [{id, a, b}]
+  var selectedId = null;
+  var groups = [];         // [{id, hexIds: [...], note, kind: 'groep' | 'plek', placeId?}]
+  var groupPick = [];      // hex ids currently being picked for a new group
+  var editingGroupId = null;
+  var snapPreview = null;
+  var panX = 0, panY = 0;
+  var scale = 1;
+  var MIN_SCALE = 0.4, MAX_SCALE = 2.5;
+  var hasCenteredOnce = false;
+  var CLICK_THRESHOLD = 6;
+  var saveTimer = null;
+
+  function uid(){ return 'h' + Math.random().toString(36).slice(2, 9); }
+  function mod(n, m){ return ((n % m) + m) % m; }
+  function cellKey(col, row){ return col + ',' + row; }
+  function clampScale(s){ return Math.min(MAX_SCALE, Math.max(MIN_SCALE, s)); }
+  function dist(a, b){ return Math.hypot(a.x - b.x, a.y - b.y); }
+  function midpoint(a, b){ return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+  function saveStateDebounced(){ clearTimeout(saveTimer); saveTimer = setTimeout(saveState, 400); }
+
+  function applyPan(){
+    world.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')';
+    canvas.style.backgroundPosition = panX + 'px ' + panY + 'px';
+    canvas.style.backgroundSize = (20 * scale) + 'px ' + (20 * scale) + 'px';
+  }
+
+  function screenToWorld(clientX, clientY){
+    var r = canvas.getBoundingClientRect();
+    return { x: (clientX - r.left - panX) / scale, y: (clientY - r.top - panY) / scale };
+  }
+
+  function zoomAt(clientX, clientY, newScale){
+    newScale = clampScale(newScale);
+    var r = canvas.getBoundingClientRect();
+    var mx = clientX - r.left, my = clientY - r.top;
+    var worldX = (mx - panX) / scale, worldY = (my - panY) / scale;
+    scale = newScale;
+    panX = mx - worldX * scale;
+    panY = my - worldY * scale;
+    applyPan();
+  }
+
+  function centerView(){
+    var r = canvas.getBoundingClientRect();
+    scale = 1;
+    panX = r.width / 2;
+    panY = r.height / 2;
+    applyPan();
+  }
+
+  // the dock no longer reserves its own strip of canvas — it floats on top, so the
+  // canvas always fills the full viewport (bottom:0, set in CSS). kept as a no-op so
+  // existing call sites don't need to change.
+  function updateDockOffset(){}
+
+  function makeItemHex(cat, label, isCustom){
+    var el = document.createElement('div');
+    el.className = 'hex source item';
+    el.dataset.cat = cat;
+    el.dataset.label = label; // plain label, zonder "+" — dit is wat er op het canvas komt
+    el.setAttribute('draggable', 'false');
+    el.textContent = isCustom ? ('+ ' + label) : label;
+    return el;
+  }
+
+  function openCategoryPanel(cat){
+    var items = CATEGORY_ITEMS[cat];
+    if (!items) return;
+    itemPanelQuestion.textContent = CATEGORY_QUESTIONS[cat] || '';
+    itemPanelGrid.innerHTML = '';
+    // a category's bouwstenen are either a flat list, or, when the category has its own
+    // sub-categories (e.g. Jij: voelen/ervaren/denken/doen), a list of {group, items} —
+    // each sub-category then gets its own labeled, visually separated row
+    var grouped = items.length > 0 && typeof items[0] === 'object';
+    itemPanelGrid.classList.toggle('grouped', grouped);
+    var ownItems = customItems[cat] || [];
+    if (grouped){
+      items.forEach(function(g){
+        var groupEl = document.createElement('div');
+        groupEl.className = 'item-group';
+        var label = document.createElement('div');
+        label.className = 'item-group-label';
+        label.textContent = g.group;
+        groupEl.appendChild(label);
+        var row = document.createElement('div');
+        row.className = 'item-group-row';
+        g.items.forEach(function(itemLabel){
+          var el = makeItemHex(cat, itemLabel);
+          row.appendChild(el);
+          fitHexText(el);
+          wireSource(el);
+        });
+        groupEl.appendChild(row);
+        itemPanelGrid.appendChild(groupEl);
+      });
+      // eigen toevoegingen komen los onderaan te staan, niet in een bestaande subgroep
+      if (ownItems.length){
+        var ownGroupEl = document.createElement('div');
+        ownGroupEl.className = 'item-group';
+        var ownLabel = document.createElement('div');
+        ownLabel.className = 'item-group-label';
+        ownLabel.textContent = 'eigen toevoegingen';
+        ownGroupEl.appendChild(ownLabel);
+        var ownRow = document.createElement('div');
+        ownRow.className = 'item-group-row';
+        ownItems.forEach(function(itemLabel){
+          var el = makeItemHex(cat, itemLabel, true);
+          ownRow.appendChild(el);
+          fitHexText(el);
+          wireSource(el);
+        });
+        ownGroupEl.appendChild(ownRow);
+        itemPanelGrid.appendChild(ownGroupEl);
+      }
+    } else {
+      items.forEach(function(itemLabel){
+        var el = makeItemHex(cat, itemLabel);
+        itemPanelGrid.appendChild(el);
+        fitHexText(el);
+        wireSource(el);
+      });
+      ownItems.forEach(function(itemLabel){
+        var el = makeItemHex(cat, itemLabel, true);
+        itemPanelGrid.appendChild(el);
+        fitHexText(el);
+        wireSource(el);
+      });
+    }
+    itemPanel.hidden = false;
+    openCategory = cat;
+    requestAnimationFrame(function(){ itemPanel.classList.add('open'); });
+    updateDockOffset();
+    setTimeout(updateDockOffset, 260);
+    updateTrashVisibility();
+  }
+
+  // zoekt een bouwsteen (vast of eigen) op naam, ongeacht categorie — hoofdletter-
+  // en spatie-ongevoelig, zodat "Piekeren" en "piekeren " hetzelfde tellen
+  function normalizeItemLabel(s){ return (s || '').trim().toLowerCase(); }
+
+  function findExistingItem(label){
+    var needle = normalizeItemLabel(label);
+    if (!needle) return null;
+    var cats = Object.keys(CATEGORY_ITEMS);
+    for (var i = 0; i < cats.length; i++){
+      var cat = cats[i];
+      var items = CATEGORY_ITEMS[cat];
+      for (var j = 0; j < items.length; j++){
+        if (typeof items[j] === 'object'){
+          for (var k = 0; k < items[j].items.length; k++){
+            if (normalizeItemLabel(items[j].items[k]) === needle){
+              return { cat: cat, label: items[j].items[k] };
+            }
+          }
+        } else if (normalizeItemLabel(items[j]) === needle){
+          return { cat: cat, label: items[j] };
+        }
+      }
+    }
+    for (var c2 = 0; c2 < cats.length; c2++){
+      var own = customItems[cats[c2]] || [];
+      for (var m = 0; m < own.length; m++){
+        if (normalizeItemLabel(own[m]) === needle){
+          return { cat: cats[c2], label: own[m] };
+        }
+      }
+    }
+    return null;
+  }
+
+  function loadCustomItems(){
+    try{
+      var raw = localStorage.getItem(CUSTOM_ITEMS_KEY);
+      if (!raw) return;
+      var data = JSON.parse(raw);
+      Object.keys(customItems).forEach(function(cat){
+        if (Array.isArray(data[cat])) customItems[cat] = data[cat];
+      });
+    } catch(e){ /* corrupte of ontbrekende opslag — gewoon leeg beginnen */ }
+  }
+
+  function saveCustomItems(){
+    try{ localStorage.setItem(CUSTOM_ITEMS_KEY, JSON.stringify(customItems)); } catch(e){ /* opslag kan vol of geblokkeerd zijn */ }
+  }
+
+  var CATEGORY_LABELS = { lijf: 'Lijf', jij: 'Jij', anderen: 'Anderen', omgeving: 'Omgeving', krachten: 'Krachten' };
+
+  // alle bouwsteen-labels (vast + eigen) met hun categorie, plat, voor zoeken op naam
+  function allItemsFlat(){
+    var out = [];
+    Object.keys(CATEGORY_ITEMS).forEach(function(cat){
+      CATEGORY_ITEMS[cat].forEach(function(entry){
+        if (typeof entry === 'object') entry.items.forEach(function(label){ out.push({ cat: cat, label: label }); });
+        else out.push({ cat: cat, label: entry });
+      });
+    });
+    Object.keys(customItems).forEach(function(cat){
+      (customItems[cat] || []).forEach(function(label){ out.push({ cat: cat, label: label }); });
+    });
+    return out;
+  }
+
+  // vanaf drie letters: bouwstenen die de getypte tekst ergens bevatten, los van de
+  // exacte match hierboven (die dekt alleen een volledig identieke naam)
+  function findSuggestions(query, limit){
+    var needle = normalizeItemLabel(query);
+    if (needle.length < 3) return [];
+    var startsWith = [], contains = [];
+    allItemsFlat().forEach(function(it){
+      var norm = normalizeItemLabel(it.label);
+      if (norm === needle) return; // exacte match wordt elders al getoond
+      if (norm.indexOf(needle) === 0) startsWith.push(it);
+      else if (norm.indexOf(needle) > -1) contains.push(it);
+    });
+    return startsWith.concat(contains).slice(0, limit || 6);
+  }
+
+  function updateNewItemMatch(){
+    var name = newItemNameInput.value.trim();
+    newItemMatch.innerHTML = '';
+    newItemMatch.hidden = true;
+    newItemSuggestions.innerHTML = '';
+    newItemSuggestions.hidden = true;
+    newItemCreate.disabled = !name;
+    if (!name) return;
+    var existing = findExistingItem(name);
+    if (existing){
+      newItemMatch.hidden = false;
+      newItemCreate.disabled = true;
+      var text = document.createElement('div');
+      text.className = 'new-item-match-text';
+      text.textContent = 'Bestaat al bij ' + (CATEGORY_LABELS[existing.cat] || existing.cat) + ' — sleep hem zo naar het canvas:';
+      newItemMatch.appendChild(text);
+      var chip = makeItemHex(existing.cat, existing.label);
+      newItemMatch.appendChild(chip);
+      fitHexText(chip);
+      wireSource(chip);
+      return;
+    }
+    var suggestions = findSuggestions(name, 6);
+    if (!suggestions.length) return;
+    newItemSuggestions.hidden = false;
+    suggestions.forEach(function(s){
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'new-item-suggestion';
+      var labelSpan = document.createElement('span');
+      labelSpan.textContent = s.label;
+      var catSpan = document.createElement('span');
+      catSpan.className = 'suggestion-cat';
+      catSpan.textContent = CATEGORY_LABELS[s.cat] || s.cat;
+      btn.appendChild(labelSpan);
+      btn.appendChild(catSpan);
+      btn.addEventListener('click', function(){
+        newItemNameInput.value = s.label;
+        updateNewItemMatch();
+        newItemNameInput.focus();
+      });
+      newItemSuggestions.appendChild(btn);
+    });
+  }
+
+  function openNewItemPanel(){
+    newItemNameInput.value = '';
+    newItemMatch.hidden = true;
+    newItemMatch.innerHTML = '';
+    newItemSuggestions.hidden = true;
+    newItemSuggestions.innerHTML = '';
+    newItemCreate.disabled = true;
+    newItemPanel.hidden = false;
+    updateTrashVisibility();
+    requestAnimationFrame(function(){ newItemNameInput.focus(); });
+  }
+
+  function closeNewItemPanel(){
+    newItemPanel.hidden = true;
+    newItemMatch.innerHTML = '';
+    newItemSuggestions.innerHTML = '';
+    updateTrashVisibility();
+  }
+
+  addItemBtn.addEventListener('click', function(){
+    if (!newItemPanel.hidden){ closeNewItemPanel(); return; }
+    openNewItemPanel();
+  });
+  newItemNameInput.addEventListener('input', updateNewItemMatch);
+  newItemCategorySelect.addEventListener('change', updateNewItemMatch);
+  newItemCancel.addEventListener('click', closeNewItemPanel);
+  newItemCreate.addEventListener('click', function(){
+    var name = newItemNameInput.value.trim();
+    if (!name || findExistingItem(name)) return;
+    var cat = newItemCategorySelect.value;
+    if (!customItems[cat]) customItems[cat] = [];
+    customItems[cat].push(name);
+    saveCustomItems();
+    if (openCategory === cat) openCategoryPanel(cat);
+    // paneel blijft open: de net aangemaakte bouwsteen verschijnt meteen als bestaande
+    // match, zodat je 'm meteen vanuit dit menu naar het canvas kunt slepen
+    updateNewItemMatch();
+  });
+
+  function closeCategoryPanel(){
+    itemPanel.classList.remove('open');
+    openCategory = null;
+    updateDockOffset();
+    updateTrashVisibility();
+    setTimeout(function(){
+      itemPanel.hidden = true;
+      itemPanelGrid.innerHTML = '';
+      updateDockOffset();
+    }, 260);
+  }
+
+  function wireCategoryWithItems(tile, cat){
+    tile.classList.add('has-items');
+    var question = CATEGORY_QUESTIONS[cat];
+    if (question){
+      tile.addEventListener('mouseenter', function(){
+        hexTooltip.textContent = question;
+        var tileRect = tile.getBoundingClientRect();
+        var dockRect = dock.getBoundingClientRect();
+        hexTooltip.style.left = (tileRect.left - dockRect.left + tileRect.width / 2) + 'px';
+        hexTooltip.style.top = (tileRect.top - dockRect.top) + 'px';
+        hexTooltip.classList.add('visible');
+      });
+      tile.addEventListener('mouseleave', function(){
+        hexTooltip.classList.remove('visible');
+      });
+    }
+    tile.addEventListener('click', function(){
+      hexTooltip.classList.remove('visible');
+      if (openCategory === cat) closeCategoryPanel();
+      else openCategoryPanel(cat);
+    });
+  }
+
+
+  function setConnectMode(on){
+    connectMode = on;
+    connectToolBtn.classList.toggle('active', connectMode);
+    connectToolBtn.setAttribute('aria-pressed', connectMode ? 'true' : 'false');
+    canvas.classList.toggle('connect-mode', connectMode);
+    if (!connectMode) clearSelection();
+    redrawEdgeHandles();
+  }
+  function setGroupMode(on){
+    groupMode = on;
+    groupToolBtn.classList.toggle('active', groupMode);
+    groupToolBtn.setAttribute('aria-pressed', groupMode ? 'true' : 'false');
+    canvas.classList.toggle('group-mode', groupMode || plekMode);
+    if (!groupMode) clearGroupPick();
+  }
+  function setPlekMode(on){
+    plekMode = on;
+    plekToolBtn.classList.toggle('active', plekMode);
+    plekToolBtn.setAttribute('aria-pressed', plekMode ? 'true' : 'false');
+    canvas.classList.toggle('group-mode', groupMode || plekMode);
+    if (on) openPlekPicker();
+    else { closePlekPicker(); clearGroupPick(); }
+  }
+  function turnOffAllToolModes(except){
+    if (except !== 'connect' && connectMode) setConnectMode(false);
+    if (except !== 'group' && groupMode) setGroupMode(false);
+    if (except !== 'plek' && plekMode) setPlekMode(false);
+    if (except !== 'person' && personPickerOpen) closePersonPicker();
+  }
+  connectToolBtn.addEventListener('click', function(){
+    var next = !connectMode;
+    turnOffAllToolModes('connect');
+    setConnectMode(next);
+  });
+  groupToolBtn.addEventListener('click', function(){
+    var next = !groupMode;
+    turnOffAllToolModes('group');
+    setGroupMode(next);
+  });
+  plekToolBtn.addEventListener('click', function(){
+    var next = !plekMode;
+    turnOffAllToolModes('plek');
+    setPlekMode(next);
+  });
+
+  // a short beschrijving of each toolbar-knop, shown to its right on hover
+  document.querySelectorAll('.tool-controls .tool-btn').forEach(function(btn){
+    btn.addEventListener('mouseenter', function(){
+      toolTooltip.textContent = btn.dataset.tooltip || btn.getAttribute('aria-label') || '';
+      toolTooltip.style.top = (btn.offsetTop + btn.offsetHeight / 2) + 'px';
+      toolTooltip.classList.add('visible');
+    });
+    btn.addEventListener('mouseleave', function(){
+      toolTooltip.classList.remove('visible');
+    });
+    btn.addEventListener('pointerdown', function(){
+      toolTooltip.classList.remove('visible');
+    });
+  });
+
+  centerBtn.addEventListener('click', function(){ centerView(); saveState(); });
+  zoomInBtn.addEventListener('click', function(){
+    var r = canvas.getBoundingClientRect();
+    zoomAt(r.left + r.width / 2, r.top + r.height / 2, scale * 1.25);
+    saveState();
+  });
+  zoomOutBtn.addEventListener('click', function(){
+    var r = canvas.getBoundingClientRect();
+    zoomAt(r.left + r.width / 2, r.top + r.height / 2, scale / 1.25);
+    saveState();
+  });
+  canvas.addEventListener('wheel', function(ev){
+    ev.preventDefault();
+    var factor = Math.exp(-ev.deltaY * 0.0015);
+    zoomAt(ev.clientX, ev.clientY, scale * factor);
+    saveStateDebounced();
+  }, { passive: false });
+
+  // --- hex grid geometry, measured from the hidden reference hex so it tracks the responsive size.
+  // cached so redraws don't force a layout read on every pointermove; refreshGeom() recomputes it. ---
+  var cachedGeom = null;
+  function refreshGeom(){
+    var rect = hexRef.getBoundingClientRect();
+    cachedGeom = { w: rect.width, h: rect.height, horizStep: rect.width * 0.75, vertStep: rect.height };
+    return cachedGeom;
+  }
+  function getGeom(){
+    return cachedGeom || refreshGeom();
+  }
+
+  // batches the connection/outline redraw to once per animation frame during a fast drag,
+  // instead of once per pointermove event
+  var redrawRAF = null;
+  function scheduleRedraw(){
+    if (redrawRAF) return;
+    redrawRAF = requestAnimationFrame(function(){ redrawRAF = null; redrawConnections(); });
+  }
+
+  function cellCenter(col, row, geom){
+    var colOdd = mod(col, 2) === 1;
+    var offsetY = colOdd ? geom.h / 2 : 0;
+    return { x: col * geom.horizStep, y: row * geom.vertStep + offsetY };
+  }
+
+  function cellFromPoint(x, y, geom){
+    var col = Math.round(x / geom.horizStep);
+    var colOdd = mod(col, 2) === 1;
+    var offsetY = colOdd ? geom.h / 2 : 0;
+    var row = Math.round((y - offsetY) / geom.vertStep);
+    return { col: col, row: row };
+  }
+
+  // the canvas is endless, so search outward in growing rings until a free cell turns up
+  function nearestFreeCell(desiredCol, desiredRow, geom, excludeKey){
+    var target = cellCenter(desiredCol, desiredRow, geom);
+    for (var radius = 0; radius <= 60; radius++){
+      var best = null, bestDist = Infinity;
+      for (var c = desiredCol - radius; c <= desiredCol + radius; c++){
+        for (var r = desiredRow - radius; r <= desiredRow + radius; r++){
+          var onRing = Math.max(Math.abs(c - desiredCol), Math.abs(r - desiredRow)) === radius;
+          if (!onRing) continue;
+          var key = cellKey(c, r);
+          if (occupied[key] && occupied[key] !== excludeKey) continue;
+          var p = cellCenter(c, r, geom);
+          var d = (p.x - target.x) * (p.x - target.x) + (p.y - target.y) * (p.y - target.y);
+          if (d < bestDist){ bestDist = d; best = { col: c, row: r }; }
+        }
+      }
+      if (best) return best;
+    }
+    return null;
+  }
+
+  // personen snap to the vertex where several hexagons meet (Catan-style), not a cell
+  // itself — reuses the same corner fractions as the outline renderer, checked across the
+  // 3x3 neighborhood around the click so the globally nearest vertex is always found
+  // alleen hoekpunten van daadwerkelijk geplaatste bouwstenen tellen mee — niet zomaar
+  // een punt in het theoretische (oneindige) raster van lege ruimte eromheen
+  function nearestVertex(x, y, geom){
+    var w = geom.w, h = geom.h;
+    var vertsRel = [
+      [0.25 * w, 0], [0.75 * w, 0], [w, 0.5 * h],
+      [0.75 * w, h], [0.25 * w, h], [0, 0.5 * h]
+    ];
+    var center = cellFromPoint(x, y, geom);
+    var best = null, bestDist = Infinity;
+    for (var c = center.col - 1; c <= center.col + 1; c++){
+      for (var r = center.row - 1; r <= center.row + 1; r++){
+        if (!occupied[cellKey(c, r)]) continue; // skip cells with no bouwsteen
+        var cc = cellCenter(c, r, geom);
+        var left = cc.x - w / 2, top = cc.y - h / 2;
+        for (var i = 0; i < vertsRel.length; i++){
+          var vx = left + vertsRel[i][0], vy = top + vertsRel[i][1];
+          var d = (vx - x) * (vx - x) + (vy - y) * (vy - y);
+          if (d < bestDist){ bestDist = d; best = { x: vx, y: vy }; }
+        }
+      }
+    }
+    var maxDist = w * 0.4; // only snap when reasonably close to an actual vertex
+    if (!best || Math.sqrt(bestDist) > maxDist) return null;
+    return best;
+  }
+
+  function personKey(x, y){ return Math.round(x) + '|' + Math.round(y); }
+
+  function showVertexPreview(v){
+    if (!vertexPreview){
+      vertexPreview = document.createElement('div');
+      vertexPreview.className = 'vertex-preview';
+      world.appendChild(vertexPreview);
+    }
+    vertexPreview.style.left = v.x + 'px';
+    vertexPreview.style.top = v.y + 'px';
+    vertexPreview.style.display = 'block';
+  }
+
+  function hideVertexPreview(){
+    if (vertexPreview) vertexPreview.style.display = 'none';
+  }
+
+  function renderPersonMarker(x, y, markerId, label){
+    var marker = document.createElement('div');
+    marker.className = 'person-marker';
+    marker.dataset.id = markerId;
+    marker.style.left = x + 'px';
+    marker.style.top = y + 'px';
+    if (label) marker.title = label;
+    marker.innerHTML = PERSON_ICON_SVG;
+    wirePersonMarkerDrag(marker, markerId);
+    world.appendChild(marker);
+    return marker;
+  }
+
+  // een al geplaatst poppetje kan je daarna naar een andere (vrije) hoekpunt verslepen —
+  // gewoon klikken (zonder te slepen) opent nog steeds het naam-paneel
+  function wirePersonMarkerDrag(marker, markerId){
+    marker.addEventListener('pointerdown', function(ev){
+      ev.stopPropagation();
+      ev.preventDefault();
+      try{ marker.setPointerCapture(ev.pointerId); }catch(e){ /* niet elk apparaat ondersteunt dit */ }
+      var startX = ev.clientX, startY = ev.clientY;
+      var moved = false;
+      var origLeft = parseFloat(marker.style.left), origTop = parseFloat(marker.style.top);
+      var origKey = personKey(origLeft, origTop);
+
+      function onMove(mv){
+        if (!moved){
+          if (Math.hypot(mv.clientX - startX, mv.clientY - startY) <= CLICK_THRESHOLD) return;
+          moved = true;
+          marker.classList.add('dragging');
+          marker.style.zIndex = 10;
+        }
+        var geom = getGeom();
+        var pt = screenToWorld(mv.clientX, mv.clientY);
+        marker.style.left = pt.x + 'px';
+        marker.style.top = pt.y + 'px';
+        var v = nearestVertex(pt.x, pt.y, geom);
+        var key = v ? personKey(v.x, v.y) : null;
+        if (v && (!personOccupied[key] || personOccupied[key] === markerId)) showVertexPreview(v);
+        else hideVertexPreview();
+      }
+
+      function onUp(mv){
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        document.removeEventListener('pointercancel', onUp);
+        hideVertexPreview();
+
+        if (!moved){
+          openPersonNamePanel(markerId);
+          return;
+        }
+
+        marker.classList.remove('dragging');
+        marker.style.zIndex = '';
+
+        var geom = getGeom();
+        var pt = screenToWorld(mv.clientX, mv.clientY);
+        var v = nearestVertex(pt.x, pt.y, geom);
+        var key = v ? personKey(v.x, v.y) : null;
+        var free = v && (!personOccupied[key] || personOccupied[key] === markerId);
+
+        if (free){
+          delete personOccupied[origKey];
+          personOccupied[key] = markerId;
+          marker.style.left = v.x + 'px';
+          marker.style.top = v.y + 'px';
+          var pm = personMarkers.find(function(m){ return m.id === markerId; });
+          if (pm){ pm.x = v.x; pm.y = v.y; }
+          saveState();
+        } else {
+          // geen geldige (vrije) kruising: terug naar de oorspronkelijke plek
+          marker.style.left = origLeft + 'px';
+          marker.style.top = origTop + 'px';
+        }
+      }
+
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onUp);
+    });
+  }
+
+  // een marker toont de naam van de persoon die hij vertegenwoordigt; meerdere markers
+  // kunnen dezelfde persoon delen, dus na een naamwijziging werken we ze allemaal bij
+  function updateMarkersLabelForPerson(personId){
+    var person = persons.find(function(p){ return p.id === personId; });
+    personMarkers.filter(function(m){ return m.personId === personId; }).forEach(function(m){
+      var marker = world.querySelector('.person-marker[data-id="' + m.id + '"]');
+      if (marker) marker.title = (person && person.label) || '';
+    });
+  }
+
+  function removePersonMarker(markerId){
+    var marker = world.querySelector('.person-marker[data-id="' + markerId + '"]');
+    if (marker) marker.remove();
+    personMarkers = personMarkers.filter(function(m){ return m.id !== markerId; });
+    Object.keys(personOccupied).forEach(function(k){ if (personOccupied[k] === markerId) delete personOccupied[k]; });
+    saveState();
+  }
+
+  function openPersonNamePanel(markerId){
+    editingPersonMarkerId = markerId;
+    var marker = personMarkers.find(function(m){ return m.id === markerId; });
+    var person = marker ? persons.find(function(p){ return p.id === marker.personId; }) : null;
+    personNameInput.value = (person && person.label) || '';
+    personNamePanel.hidden = false;
+    updateTrashVisibility();
+    requestAnimationFrame(function(){ personNameInput.focus(); });
+  }
+
+  function closePersonNamePanel(){
+    personNamePanel.hidden = true;
+    editingPersonMarkerId = null;
+    personNameInput.value = '';
+    updateTrashVisibility();
+  }
+
+  personNameSave.addEventListener('click', function(){
+    var text = personNameInput.value.trim();
+    if (editingPersonMarkerId){
+      var marker = personMarkers.find(function(m){ return m.id === editingPersonMarkerId; });
+      if (marker){
+        var person = persons.find(function(p){ return p.id === marker.personId; });
+        if (person) person.label = text;
+        updateMarkersLabelForPerson(marker.personId);
+      }
+    }
+    personNamePanel.hidden = true;
+    editingPersonMarkerId = null;
+    personNameInput.value = '';
+    saveState();
+  });
+
+  personNameDelete.addEventListener('click', function(){
+    if (editingPersonMarkerId) removePersonMarker(editingPersonMarkerId);
+    personNamePanel.hidden = true;
+    editingPersonMarkerId = null;
+    personNameInput.value = '';
+  });
+
+  personNameCancel.addEventListener('click', function(){
+    closePersonNamePanel();
+  });
+
+  personNameInput.addEventListener('keydown', function(ev){
+    if (ev.key === 'Enter'){ ev.preventDefault(); personNameSave.click(); }
+  });
+
+  // verwijdert een persoon helemaal uit het register, inclusief alle markers die naar
+  // hem verwijzen (een persoon kan immers op meerdere kruisingen staan)
+  function removePersonCompletely(personId){
+    personMarkers.filter(function(m){ return m.personId === personId; }).forEach(function(m){
+      var marker = world.querySelector('.person-marker[data-id="' + m.id + '"]');
+      if (marker) marker.remove();
+      Object.keys(personOccupied).forEach(function(k){ if (personOccupied[k] === m.id) delete personOccupied[k]; });
+    });
+    personMarkers = personMarkers.filter(function(m){ return m.personId !== personId; });
+    persons = persons.filter(function(p){ return p.id !== personId; });
+    if (editingPersonMarkerId && !personMarkers.some(function(m){ return m.id === editingPersonMarkerId; })){
+      closePersonNamePanel();
+    }
+    saveState();
+  }
+
+  // uitlichten: dimt de rest van het canvas en licht alleen de gekozen persoon of plek uit
+  function toggleSpotlight(type, id){
+    if (spotlight && spotlight.type === type && spotlight.id === id) spotlight = null;
+    else spotlight = { type: type, id: id };
+    applySpotlight();
+  }
+
+  function applySpotlight(){
+    canvas.classList.toggle('spotlight-mode', !!spotlight);
+    world.querySelectorAll('.spotlight-hit').forEach(function(el){ el.classList.remove('spotlight-hit'); });
+    if (!spotlight) return;
+    if (spotlight.type === 'person'){
+      personMarkers.filter(function(m){ return m.personId === spotlight.id; }).forEach(function(m){
+        var el = world.querySelector('.person-marker[data-id="' + m.id + '"]');
+        if (el) el.classList.add('spotlight-hit');
+      });
+    } else if (spotlight.type === 'place'){
+      groups.filter(function(g){ return g.kind === 'plek' && g.placeId === spotlight.id; }).forEach(function(g){
+        var box = groupsLayer.querySelector('.group-box[data-group-id="' + g.id + '"]');
+        if (box) box.classList.add('spotlight-hit');
+        g.hexIds.forEach(function(id){
+          var hex = world.querySelector('[data-id="' + id + '"]');
+          if (hex) hex.classList.add('spotlight-hit');
+        });
+      });
+    }
+  }
+
+  // het uitschuifmenu bij de personen-tool: toont de al eerder gemaakte personen (bv.
+  // "moeder") zodat je die opnieuw kan neerzetten, of je maakt hieronder een nieuwe aan
+  function renderPersonPickerList(){
+    personPickerList.innerHTML = '';
+    if (persons.length === 0){
+      var empty = document.createElement('div');
+      empty.className = 'person-picker-empty';
+      empty.textContent = 'Nog geen personen. Maak er hieronder één aan en sleep die naar een kruising.';
+      personPickerList.appendChild(empty);
+      return;
+    }
+    persons.forEach(function(p){
+      var item = document.createElement('div');
+      item.className = 'person-picker-item';
+
+      var label = document.createElement('span');
+      label.className = 'person-picker-item-label';
+      label.textContent = p.label || '(naamloos)';
+      item.appendChild(label);
+
+      var spotBtn = document.createElement('button');
+      spotBtn.type = 'button';
+      spotBtn.className = 'person-picker-item-spotlight';
+      if (spotlight && spotlight.type === 'person' && spotlight.id === p.id) spotBtn.classList.add('active');
+      spotBtn.setAttribute('aria-label', 'Licht ' + (p.label || 'deze persoon') + ' uit');
+      spotBtn.innerHTML = SPOTLIGHT_ICON_SVG;
+      spotBtn.addEventListener('pointerdown', function(ev){ ev.stopPropagation(); });
+      spotBtn.addEventListener('click', function(ev){
+        ev.stopPropagation();
+        toggleSpotlight('person', p.id);
+        renderPersonPickerList();
+      });
+      item.appendChild(spotBtn);
+
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'person-picker-item-delete';
+      delBtn.setAttribute('aria-label', 'Verwijder ' + (p.label || 'deze persoon'));
+      delBtn.innerHTML = '&times;';
+      delBtn.addEventListener('pointerdown', function(ev){ ev.stopPropagation(); });
+      delBtn.addEventListener('click', function(ev){
+        ev.stopPropagation();
+        removePersonCompletely(p.id);
+        renderPersonPickerList();
+      });
+      item.appendChild(delBtn);
+
+      wirePersonPickerDrag(label, p.id);
+      personPickerList.appendChild(item);
+    });
+  }
+
+  function openPersonPicker(){
+    personPickerOpen = true;
+    renderPersonPickerList();
+    personPicker.hidden = false;
+    personPicker.style.top = personToolBtn.offsetTop + 'px';
+    personPickerInput.value = '';
+    personToolBtn.classList.add('active');
+    personToolBtn.setAttribute('aria-pressed', 'true');
+    updateTrashVisibility();
+  }
+
+  function closePersonPicker(){
+    personPickerOpen = false;
+    personPicker.hidden = true;
+    personToolBtn.classList.remove('active');
+    personToolBtn.setAttribute('aria-pressed', 'false');
+    updateTrashVisibility();
+  }
+
+  personToolBtn.addEventListener('click', function(){
+    var next = !personPickerOpen;
+    turnOffAllToolModes('person');
+    if (next) openPersonPicker();
+    else closePersonPicker();
+  });
+
+  personPickerInput.addEventListener('keydown', function(ev){
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    var text = personPickerInput.value.trim();
+    if (!text) return;
+    var id = uid();
+    persons.push({ id: id, label: text });
+    personPickerInput.value = '';
+    renderPersonPickerList();
+    saveState();
+  });
+
+  document.addEventListener('pointerdown', function(ev){
+    if (personPickerOpen && !ev.target.closest('.person-picker') && ev.target !== personToolBtn && !personToolBtn.contains(ev.target)){
+      closePersonPicker();
+    }
+  });
+
+  // slepen van een persoon uit het uitschuifmenu naar een kruising van bouwstenen
+  // (Catan-stijl) — dezelfde persoon kan op meerdere kruisingen neergezet worden
+  function wirePersonPickerDrag(item, personId){
+    item.addEventListener('pointerdown', function(ev){
+      ev.preventDefault();
+      closePersonPicker();
+
+      var ghost = document.createElement('div');
+      ghost.className = 'person-marker';
+      ghost.style.position = 'fixed';
+      ghost.style.zIndex = '50';
+      ghost.style.pointerEvents = 'none';
+      ghost.style.left = ev.clientX + 'px';
+      ghost.style.top = ev.clientY + 'px';
+      ghost.innerHTML = PERSON_ICON_SVG;
+      document.body.appendChild(ghost);
+
+      function moveGhost(mv){
+        ghost.style.left = mv.clientX + 'px';
+        ghost.style.top = mv.clientY + 'px';
+        var geom = getGeom();
+        var canvasRect = canvas.getBoundingClientRect();
+        var withinCanvas = mv.clientX >= canvasRect.left && mv.clientX <= canvasRect.right &&
+                            mv.clientY >= canvasRect.top && mv.clientY <= canvasRect.bottom;
+        if (withinCanvas){
+          var pt = screenToWorld(mv.clientX, mv.clientY);
+          var v = nearestVertex(pt.x, pt.y, geom);
+          if (v && !personOccupied[personKey(v.x, v.y)]) showVertexPreview(v);
+          else hideVertexPreview();
+        } else {
+          hideVertexPreview();
+        }
+      }
+
+      function cleanup(){
+        document.removeEventListener('pointermove', moveGhost);
+        document.removeEventListener('pointerup', drop);
+        document.removeEventListener('pointercancel', cleanup);
+        ghost.remove();
+        hideVertexPreview();
+      }
+
+      function drop(mv){
+        cleanup();
+
+        var canvasRect = canvas.getBoundingClientRect();
+        var withinCanvas = mv.clientX >= canvasRect.left && mv.clientX <= canvasRect.right &&
+                            mv.clientY >= canvasRect.top && mv.clientY <= canvasRect.bottom;
+        if (!withinCanvas) return;
+
+        var geom = getGeom();
+        var pt = screenToWorld(mv.clientX, mv.clientY);
+        var v = nearestVertex(pt.x, pt.y, geom);
+        if (!v) return;
+        var key = personKey(v.x, v.y);
+        if (personOccupied[key]) return; // al een persoon op deze kruising
+
+        var person = persons.find(function(p){ return p.id === personId; });
+        var markerId = uid();
+        personMarkers.push({ id: markerId, personId: personId, x: v.x, y: v.y });
+        personOccupied[key] = markerId;
+        renderPersonMarker(v.x, v.y, markerId, person ? person.label : '');
+        saveState();
+      }
+
+      document.addEventListener('pointermove', moveGhost);
+      document.addEventListener('pointerup', drop);
+      document.addEventListener('pointercancel', cleanup);
+    });
+  }
+
+  function updateHasItems(){
+    canvas.classList.toggle('has-items', world.querySelectorAll('.hex.placed').length > 0);
+  }
+
+  function hashStr(s){
+    var h = 0;
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return h;
+  }
+
+  function hexCenterPx(hex, geom){
+    return { x: parseFloat(hex.style.left) + geom.w / 2, y: parseFloat(hex.style.top) + geom.h / 2 };
+  }
+
+  // which neighbor cell sits behind each of the hex's 6 edges, so a shared edge can be skipped
+  function edgeNeighbors(col, row){
+    var odd = mod(col, 2) === 1;
+    return {
+      top:        [col, row - 1],
+      upperRight: odd ? [col + 1, row] : [col + 1, row - 1],
+      lowerRight: odd ? [col + 1, row + 1] : [col + 1, row],
+      bottom:     [col, row + 1],
+      lowerLeft:  odd ? [col - 1, row + 1] : [col - 1, row],
+      upperLeft:  odd ? [col - 1, row] : [col - 1, row - 1]
+    };
+  }
+
+  // draws the thin outline per hex, leaving out whichever edges touch an occupied neighbor
+  function redrawOutlines(){
+    outlinesSvg.innerHTML = '';
+    var geom = getGeom(), w = geom.w, h = geom.h;
+    var verts = {
+      V1: [0.25 * w, 0], V2: [0.75 * w, 0], V3: [w, 0.5 * h],
+      V4: [0.75 * w, h], V5: [0.25 * w, h], V6: [0, 0.5 * h]
+    };
+    var edges = [
+      { name: 'top', a: 'V1', b: 'V2' },
+      { name: 'upperRight', a: 'V2', b: 'V3' },
+      { name: 'lowerRight', a: 'V3', b: 'V4' },
+      { name: 'bottom', a: 'V4', b: 'V5' },
+      { name: 'lowerLeft', a: 'V5', b: 'V6' },
+      { name: 'upperLeft', a: 'V6', b: 'V1' }
+    ];
+    var ns = 'http://www.w3.org/2000/svg';
+    world.querySelectorAll('.hex.placed').forEach(function(hex){
+      var col = +hex.dataset.col, row = +hex.dataset.row;
+      var left = parseFloat(hex.style.left), top = parseFloat(hex.style.top);
+      var neighbors = edgeNeighbors(col, row);
+      edges.forEach(function(e){
+        var nb = neighbors[e.name];
+        if (occupied[cellKey(nb[0], nb[1])]) return; // shared edge: no line on either side
+        var p1 = verts[e.a], p2 = verts[e.b];
+        var line = document.createElementNS(ns, 'line');
+        line.setAttribute('x1', left + p1[0]);
+        line.setAttribute('y1', top + p1[1]);
+        line.setAttribute('x2', left + p2[0]);
+        line.setAttribute('y2', top + p2[1]);
+        line.setAttribute('stroke', 'var(--hex-line)');
+        line.setAttribute('stroke-width', OUTLINE_WIDTH);
+        line.setAttribute('stroke-linecap', 'round');
+        outlinesSvg.appendChild(line);
+      });
+    });
+  }
+
+  // shared smooth-curve path builder, used for both the persisted connections and the
+  // live draft line while dragging a new one off an edge handle
+  function bezierPathD(p1, p2, curveSign){
+    var dx = p2.x - p1.x, dy = p2.y - p1.y;
+    var dist = Math.max(1, Math.hypot(dx, dy));
+    var perpX = -dy / dist, perpY = dx / dist;
+    var curve = Math.min(26, dist * 0.16) * curveSign;
+    var cx = (p1.x + p2.x) / 2 + perpX * curve;
+    var cy = (p1.y + p2.y) / 2 + perpY * curve;
+    return 'M ' + p1.x + ' ' + p1.y + ' Q ' + cx + ' ' + cy + ' ' + p2.x + ' ' + p2.y;
+  }
+
+  // the 6 edge midpoints of a hexagon (no outset) — where a pijl actually hooks in, in the
+  // middle of each rechte kant. Same order everywhere: top, upperRight, lowerRight,
+  // bottom, lowerLeft, upperLeft — so an edge index means the same thing throughout.
+  function edgeMidpoints(geom){
+    var w = geom.w, h = geom.h;
+    return [
+      { x: 0.5 * w, y: 0 },          // top
+      { x: 0.875 * w, y: 0.25 * h }, // upperRight
+      { x: 0.875 * w, y: 0.75 * h }, // lowerRight
+      { x: 0.5 * w, y: h },          // bottom
+      { x: 0.125 * w, y: 0.75 * h }, // lowerLeft
+      { x: 0.125 * w, y: 0.25 * h }  // upperLeft
+    ];
+  }
+
+  // the outward unit normal of each kant — which way that edge "faces" away from the
+  // hexagon's own center. Shared by the handle outset and by the connector curve, so a
+  // pijl always leaves and arrives in the direction its chosen kant actually points.
+  function edgeNormals(geom){
+    var w = geom.w, h = geom.h, cx = w / 2, cy = h / 2;
+    return edgeMidpoints(geom).map(function(m){
+      var dx = m.x - cx, dy = m.y - cy;
+      var d = Math.max(1, Math.hypot(dx, dy));
+      return { x: dx / d, y: dy / d };
+    });
+  }
+
+  // the 6 plusjes per bouwsteen, shown only while the verbind-tool is active: the same
+  // edge midpoints, nudged a bit clear of the hexagon so they're easy to grab
+  function edgeHandlePositions(geom){
+    var OUTSET = 15;
+    var mids = edgeMidpoints(geom), normals = edgeNormals(geom);
+    return mids.map(function(m, i){
+      return { x: m.x + normals[i].x * OUTSET, y: m.y + normals[i].y * OUTSET };
+    });
+  }
+
+  // the exact point on a hex's boundary where a pijl hooks in, in world px
+  function edgeAnchorPx(hex, edgeIndex, geom){
+    var left = parseFloat(hex.style.left), top = parseFloat(hex.style.top);
+    var m = edgeMidpoints(geom)[edgeIndex];
+    return { x: left + m.x, y: top + m.y };
+  }
+
+  // a connector curve that leaves p1 and arrives at p2 along their own kant's outward
+  // richting, instead of a generic perpendicular offset — so the bend actually depends
+  // on which twee kanten you connected, not just the straight-line direction between them
+  function edgeBezierPathD(p1, n1, p2, n2){
+    var dx = p2.x - p1.x, dy = p2.y - p1.y;
+    var dist = Math.max(1, Math.hypot(dx, dy));
+    var controlDist = Math.min(55, dist * 0.45);
+    var c1 = { x: p1.x + n1.x * controlDist, y: p1.y + n1.y * controlDist };
+    var c2 = { x: p2.x + n2.x * controlDist, y: p2.y + n2.y * controlDist };
+    return 'M ' + p1.x + ' ' + p1.y + ' C ' + c1.x + ' ' + c1.y + ' ' + c2.x + ' ' + c2.y + ' ' + p2.x + ' ' + p2.y;
+  }
+
+  // picks whichever kant of a hex faces a given point — used as a fallback for
+  // connections that don't carry their own fixed edge (older patronen, or the click-to-
+  // connect flow), so every pijl still hooks into an edge midpoint rather than a center
+  function nearestEdgeIndexFor(hex, otherPoint, geom){
+    var left = parseFloat(hex.style.left), top = parseFloat(hex.style.top);
+    var mids = edgeMidpoints(geom);
+    var best = 0, bestDist = Infinity;
+    mids.forEach(function(m, i){
+      var mx = left + m.x, my = top + m.y;
+      var d = (mx - otherPoint.x) * (mx - otherPoint.x) + (my - otherPoint.y) * (my - otherPoint.y);
+      if (d < bestDist){ bestDist = d; best = i; }
+    });
+    return best;
+  }
+
+  function redrawConnections(){
+    svg.innerHTML = '';
+    var geom = getGeom();
+    connections.forEach(function(conn){
+      var a = world.querySelector('[data-id="' + conn.a + '"]');
+      var b = world.querySelector('[data-id="' + conn.b + '"]');
+      if (!a || !b) return;
+      var edgeA = (conn.edgeA != null) ? conn.edgeA : nearestEdgeIndexFor(a, hexCenterPx(b, geom), geom);
+      var edgeB = (conn.edgeB != null) ? conn.edgeB : nearestEdgeIndexFor(b, hexCenterPx(a, geom), geom);
+      var p1 = edgeAnchorPx(a, edgeA, geom);
+      var p2 = edgeAnchorPx(b, edgeB, geom);
+      var normals = edgeNormals(geom);
+      // the bend now follows the two kanten the pijl actually connects, instead of a
+      // generic perpendicular offset — the same pair of kanten always bends the same way,
+      // but a different pair bends differently
+      var d = edgeBezierPathD(p1, normals[edgeA], p2, normals[edgeB]);
+
+      var ns = 'http://www.w3.org/2000/svg';
+      var hit = document.createElementNS(ns, 'path');
+      hit.setAttribute('d', d);
+      hit.setAttribute('class', 'conn-hit');
+      hit.setAttribute('fill', 'none');
+      hit.setAttribute('stroke', 'transparent');
+      hit.setAttribute('stroke-width', '16');
+      hit.addEventListener('click', function(){ removeConnection(conn.id); });
+
+      // animated stippellijn: dots keep marching from begin to eind, which already shows
+      // the direction without a separate pijlpunt
+      var line = document.createElementNS(ns, 'path');
+      line.setAttribute('d', d);
+      line.setAttribute('class', 'conn-line');
+      line.setAttribute('fill', 'none');
+      line.setAttribute('stroke', 'var(--fg)');
+      line.setAttribute('stroke-opacity', '0.6');
+
+      svg.appendChild(hit);
+      svg.appendChild(line);
+    });
+    redrawOutlines();
+    redrawGroups();
+    redrawEdgeHandles();
+  }
+
+  // finds the closest plusje to a world point, excluding the kant being dragged from —
+  // only counts it within reach, so a pijl snaps onto a specific kant rather than anywhere
+  // on the target bouwsteen
+  function findNearbyHandle(worldPt, excludeHexId, geom){
+    var threshold = geom.w * 0.32;
+    var closest = null, closestDist = Infinity;
+    edgeHandlesLayer.querySelectorAll('.edge-handle').forEach(function(h){
+      if (h.dataset.hexId === excludeHexId) return;
+      var hx = parseFloat(h.style.left), hy = parseFloat(h.style.top);
+      var d = Math.hypot(hx - worldPt.x, hy - worldPt.y);
+      if (d < closestDist){ closestDist = d; closest = h; }
+    });
+    return (closest && closestDist <= threshold) ? closest : null;
+  }
+
+  // same order as edgeMidpoints / edgeNeighbors' own keys, so index <-> name always line up
+  var EDGE_NAMES = ['top', 'upperRight', 'lowerRight', 'bottom', 'lowerLeft', 'upperLeft'];
+
+  function redrawEdgeHandles(){
+    edgeHandlesLayer.innerHTML = '';
+    if (!connectMode) return;
+    var geom = getGeom();
+    var positions = edgeHandlePositions(geom);
+    world.querySelectorAll('.hex.placed').forEach(function(hex){
+      var left = parseFloat(hex.style.left), top = parseFloat(hex.style.top);
+      var col = +hex.dataset.col, row = +hex.dataset.row;
+      var neighbors = edgeNeighbors(col, row);
+      positions.forEach(function(pos, edgeIndex){
+        // als aan deze kant al een andere bouwsteen ligt, mag je daarvandaan geen
+        // verbinding trekken: de twee hexagons raken elkaar al op die kant
+        var nb = neighbors[EDGE_NAMES[edgeIndex]];
+        if (occupied[cellKey(nb[0], nb[1])]) return;
+        var handle = document.createElement('div');
+        handle.className = 'edge-handle';
+        handle.dataset.hexId = hex.dataset.id;
+        handle.dataset.edgeIndex = edgeIndex;
+        handle.style.left = (left + pos.x) + 'px';
+        handle.style.top = (top + pos.y) + 'px';
+        wireEdgeHandleDrag(handle, hex);
+        edgeHandlesLayer.appendChild(handle);
+      });
+    });
+  }
+
+  // dragging a plusje draws a dashed draft pijl that follows the pointer; as it nears
+  // another bouwsteen's eigen plusje, that one turns into a kruisje to show exactly where
+  // the pijl will attach. dropping near a kruisje maakt de verbinding, elders annuleert het.
+  function wireEdgeHandleDrag(handle, hex){
+    handle.addEventListener('pointerdown', function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      var fromId = hex.dataset.id;
+      var start = { x: parseFloat(handle.style.left), y: parseFloat(handle.style.top) };
+      var ns = 'http://www.w3.org/2000/svg';
+      var draftPath = document.createElementNS(ns, 'path');
+      draftPath.setAttribute('class', 'conn-draft');
+      draftPath.setAttribute('fill', 'none');
+      draftPath.setAttribute('stroke', 'var(--fg)');
+      draftPath.setAttribute('stroke-width', '2');
+      draftPath.setAttribute('stroke-dasharray', '4 4');
+      svg.appendChild(draftPath);
+      var nearHandle = null;
+
+      function clearTargetHighlight(){
+        if (nearHandle){ nearHandle.classList.remove('target-near'); nearHandle = null; }
+      }
+
+      function onMove(mv){
+        var geom = getGeom();
+        var w = screenToWorld(mv.clientX, mv.clientY);
+        draftPath.setAttribute('d', bezierPathD(start, w, 1));
+        clearTargetHighlight();
+        nearHandle = findNearbyHandle(w, fromId, geom);
+        if (nearHandle) nearHandle.classList.add('target-near');
+      }
+
+      function onUp(){
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        draftPath.remove();
+        if (nearHandle){
+          var edgeA = parseInt(handle.dataset.edgeIndex, 10);
+          var edgeB = parseInt(nearHandle.dataset.edgeIndex, 10);
+          var created = toggleConnection(fromId, nearHandle.dataset.hexId, edgeA, edgeB);
+          clearTargetHighlight();
+          // zodra een lijn is getrokken, ga je uit de verbind-tool — voor een nieuwe weer
+          // opnieuw de toolbar in
+          if (created) setConnectMode(false);
+        }
+      }
+
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    });
+  }
+
+  // draws the dashed box + note badge for every note-group, sized to its current
+  // member bouwstenen so it follows them automatically when they're dragged around
+  function redrawGroups(){
+    groupsLayer.innerHTML = '';
+    var geom = getGeom();
+    var pad = 16;
+    groups.forEach(function(g){
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, found = false;
+      g.hexIds.forEach(function(id){
+        var hex = world.querySelector('[data-id="' + id + '"]');
+        if (!hex) return;
+        found = true;
+        var left = parseFloat(hex.style.left), top = parseFloat(hex.style.top);
+        minX = Math.min(minX, left);
+        minY = Math.min(minY, top);
+        maxX = Math.max(maxX, left + geom.w);
+        maxY = Math.max(maxY, top + geom.h);
+      });
+      if (!found) return;
+
+      var isPlek = g.kind === 'plek';
+      var box = document.createElement('div');
+      box.className = 'group-box' + (isPlek ? ' plek' : '');
+      box.dataset.groupId = g.id;
+
+      if (isPlek){
+        // een plek is altijd een echte, ronde cirkel — nooit een ovaal dat meerekt met
+        // een niet-vierkante selectie — groot genoeg om alle bouwstenen te omvatten
+        var cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+        var diameter = Math.max(maxX - minX, maxY - minY) + pad * 2;
+        var r = diameter / 2;
+        box.style.left = (cx - r) + 'px';
+        box.style.top = (cy - r) + 'px';
+        box.style.width = diameter + 'px';
+        box.style.height = diameter + 'px';
+
+        var place = places.find(function(p){ return p.id === g.placeId; });
+        var label = document.createElement('div');
+        label.className = 'group-plek-label';
+        var hasName = place && place.label && place.label.trim();
+        if (!hasName) label.classList.add('placeholder');
+        label.textContent = hasName ? place.label.trim() : 'Naam toevoegen';
+        label.title = hasName ? place.label.trim() : 'Geef deze plek een naam';
+        label.addEventListener('pointerdown', function(ev){ ev.stopPropagation(); });
+        label.addEventListener('click', function(ev){
+          ev.stopPropagation();
+          openPlaceNamePanel(g.placeId);
+        });
+        box.appendChild(label);
+
+        var noteBadge = document.createElement('div');
+        noteBadge.className = 'group-note-badge plek-note-badge';
+        if (g.note && g.note.trim()) noteBadge.classList.add('has-note');
+        noteBadge.innerHTML = NOTE_ICON_SVG;
+        noteBadge.title = (g.note && g.note.trim()) ? g.note : 'Notitie toevoegen';
+        noteBadge.addEventListener('pointerdown', function(ev){ ev.stopPropagation(); });
+        noteBadge.addEventListener('click', function(ev){
+          ev.stopPropagation();
+          openGroupNotePanel(g);
+        });
+        box.appendChild(noteBadge);
+      } else {
+        box.style.left = (minX - pad) + 'px';
+        box.style.top = (minY - pad) + 'px';
+        box.style.width = (maxX - minX + pad * 2) + 'px';
+        box.style.height = (maxY - minY + pad * 2) + 'px';
+
+        var badge = document.createElement('div');
+        badge.className = 'group-note-badge';
+        if (g.note && g.note.trim()) badge.classList.add('has-note');
+        badge.innerHTML = NOTE_ICON_SVG;
+        badge.title = (g.note && g.note.trim()) ? g.note : 'Notitie toevoegen';
+        badge.addEventListener('pointerdown', function(ev){ ev.stopPropagation(); });
+        badge.addEventListener('click', function(ev){
+          ev.stopPropagation();
+          openGroupNotePanel(g);
+        });
+        box.appendChild(badge);
+      }
+
+      groupsLayer.appendChild(box);
+    });
+    applySpotlight();
+  }
+
+  function updatePlekPickerHint(){
+    if (!plekPickerHint) return;
+    plekPickerHint.textContent = groupPick.length > 0
+      ? (groupPick.length + (groupPick.length === 1 ? ' bouwsteen geselecteerd — kies of maak een plek' : ' bouwstenen geselecteerd — kies of maak een plek'))
+      : 'Selecteer eerst bouwstenen op het canvas';
+  }
+
+  function updateGroupToolbar(){
+    if (groupMode && groupPick.length > 0){
+      groupToolbar.hidden = false;
+      groupToolbarCount.textContent = groupPick.length + (groupPick.length === 1 ? ' bouwsteen' : ' bouwstenen') + ' geselecteerd';
+    } else {
+      groupToolbar.hidden = true;
+    }
+    if (plekMode) updatePlekPickerHint();
+    updateTrashVisibility();
+  }
+
+  function toggleGroupPick(hex){
+    var id = hex.dataset.id;
+    var idx = groupPick.indexOf(id);
+    if (idx >= 0){
+      groupPick.splice(idx, 1);
+      hex.classList.remove('group-pick');
+    } else {
+      groupPick.push(id);
+      hex.classList.add('group-pick');
+    }
+    updateGroupToolbar();
+  }
+
+  function clearGroupPick(){
+    groupPick.forEach(function(id){
+      var hex = world.querySelector('[data-id="' + id + '"]');
+      if (hex) hex.classList.remove('group-pick');
+    });
+    groupPick = [];
+    updateGroupToolbar();
+  }
+
+  function removeHexFromGroups(hexId){
+    groups.forEach(function(g){
+      g.hexIds = g.hexIds.filter(function(id){ return id !== hexId; });
+    });
+    groups = groups.filter(function(g){ return g.hexIds.length > 0; });
+  }
+
+  // het notitie-panel bij een groep (vierkant) of plek (cirkel) is nu alleen om een
+  // bestaande notitie te bekijken/bewerken/verwijderen — het aanmaken zelf gaat elders
+  function openGroupNotePanel(existingGroup){
+    editingGroupId = existingGroup.id;
+    editingGroupKind = existingGroup.kind || 'groep';
+    groupNoteInput.value = existingGroup.note || '';
+    groupNoteInput.placeholder = editingGroupKind === 'plek' ? 'Notitie bij deze plek...' : 'Schrijf een notitie bij deze bouwstenen...';
+    groupNoteDelete.textContent = editingGroupKind === 'plek' ? 'Verwijder plek' : 'Verwijder groep';
+    groupNoteDelete.hidden = false;
+    groupNotePanel.hidden = false;
+    groupToolbar.hidden = true;
+    updateTrashVisibility();
+    requestAnimationFrame(function(){ groupNoteInput.focus(); });
+  }
+
+  function closeGroupNotePanel(){
+    groupNotePanel.hidden = true;
+    editingGroupId = null;
+    editingGroupKind = null;
+    groupNoteInput.value = '';
+    updateGroupToolbar();
+    updateTrashVisibility();
+  }
+
+  // "+ Groep" maakt direct een vierkant kader van de selectie, zonder tussenstap — het
+  // vierkante kader zelf laat al zien dat er (nog) geen notitie is; die zet je er apart bij
+  groupNoteBtn.addEventListener('click', function(){
+    if (groupPick.length === 0) return;
+    groups.push({ id: uid(), hexIds: groupPick.slice(), note: '', kind: 'groep' });
+    clearGroupPick();
+    redrawGroups();
+    saveState();
+  });
+
+  groupCancelBtn.addEventListener('click', function(){
+    clearGroupPick();
+  });
+
+  groupNoteCancel.addEventListener('click', function(){
+    closeGroupNotePanel();
+  });
+
+  groupNoteSave.addEventListener('click', function(){
+    var text = groupNoteInput.value.trim();
+    if (editingGroupId){
+      var g = groups.find(function(g){ return g.id === editingGroupId; });
+      if (g) g.note = text;
+    }
+    closeGroupNotePanel();
+    redrawGroups();
+    saveState();
+  });
+
+  groupNoteDelete.addEventListener('click', function(){
+    if (editingGroupId){
+      groups = groups.filter(function(g){ return g.id !== editingGroupId; });
+    }
+    closeGroupNotePanel();
+    redrawGroups();
+    saveState();
+  });
+
+  // ---- plek-tool: hergebruikbare plekken (zoals personen), maar toegekend aan een
+  // selectie bouwstenen die als cirkel verschijnt (zoals de groep-tool al deed) ----
+
+  function assignSelectionToPlace(placeId){
+    if (groupPick.length === 0) return;
+    groups.push({ id: uid(), hexIds: groupPick.slice(), note: '', kind: 'plek', placeId: placeId });
+    clearGroupPick();
+    updatePlekPickerHint();
+    redrawGroups();
+    saveState();
+  }
+
+  function removePlaceCompletely(placeId){
+    groups = groups.filter(function(g){ return !(g.kind === 'plek' && g.placeId === placeId); });
+    places = places.filter(function(p){ return p.id !== placeId; });
+    if (spotlight && spotlight.type === 'place' && spotlight.id === placeId) spotlight = null;
+    redrawGroups();
+    saveState();
+  }
+
+  function renderPlekPickerList(){
+    plekPickerList.innerHTML = '';
+    if (places.length === 0){
+      var empty = document.createElement('div');
+      empty.className = 'person-picker-empty';
+      empty.textContent = 'Nog geen plekken. Maak er hieronder één aan.';
+      plekPickerList.appendChild(empty);
+      return;
+    }
+    places.forEach(function(p){
+      var item = document.createElement('div');
+      item.className = 'person-picker-item';
+
+      var label = document.createElement('span');
+      label.className = 'person-picker-item-label';
+      label.textContent = p.label || '(naamloos)';
+      label.addEventListener('click', function(ev){
+        ev.stopPropagation();
+        assignSelectionToPlace(p.id);
+      });
+      item.appendChild(label);
+
+      var spotBtn = document.createElement('button');
+      spotBtn.type = 'button';
+      spotBtn.className = 'person-picker-item-spotlight';
+      if (spotlight && spotlight.type === 'place' && spotlight.id === p.id) spotBtn.classList.add('active');
+      spotBtn.setAttribute('aria-label', 'Licht ' + (p.label || 'deze plek') + ' uit');
+      spotBtn.innerHTML = SPOTLIGHT_ICON_SVG;
+      spotBtn.addEventListener('pointerdown', function(ev){ ev.stopPropagation(); });
+      spotBtn.addEventListener('click', function(ev){
+        ev.stopPropagation();
+        toggleSpotlight('place', p.id);
+        renderPlekPickerList();
+      });
+      item.appendChild(spotBtn);
+
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'person-picker-item-delete';
+      delBtn.setAttribute('aria-label', 'Verwijder ' + (p.label || 'deze plek'));
+      delBtn.innerHTML = '&times;';
+      delBtn.addEventListener('pointerdown', function(ev){ ev.stopPropagation(); });
+      delBtn.addEventListener('click', function(ev){
+        ev.stopPropagation();
+        removePlaceCompletely(p.id);
+        renderPlekPickerList();
+      });
+      item.appendChild(delBtn);
+
+      plekPickerList.appendChild(item);
+    });
+  }
+
+  function openPlekPicker(){
+    plekPickerOpen = true;
+    renderPlekPickerList();
+    plekPicker.hidden = false;
+    plekPicker.style.top = plekToolBtn.offsetTop + 'px';
+    plekPickerInput.value = '';
+    updatePlekPickerHint();
+    updateTrashVisibility();
+  }
+
+  function closePlekPicker(){
+    plekPickerOpen = false;
+    plekPicker.hidden = true;
+    updateTrashVisibility();
+  }
+
+  plekPickerInput.addEventListener('keydown', function(ev){
+    if (ev.key !== 'Enter') return;
+    ev.preventDefault();
+    var text = plekPickerInput.value.trim();
+    if (!text) return;
+    var id = uid();
+    places.push({ id: id, label: text });
+    plekPickerInput.value = '';
+    if (groupPick.length > 0) assignSelectionToPlace(id);
+    renderPlekPickerList();
+    saveState();
+  });
+
+  document.addEventListener('pointerdown', function(ev){
+    if (plekPickerOpen && !ev.target.closest('.person-picker') && ev.target !== plekToolBtn && !plekToolBtn.contains(ev.target)){
+      setPlekMode(false);
+    }
+  });
+
+  // ---- plek-identiteit hernoemen (werkt door op de naam-pil onder een cirkel te klikken) ----
+  function openPlaceNamePanel(placeId){
+    editingPlaceId = placeId;
+    var place = places.find(function(p){ return p.id === placeId; });
+    placeNameInput.value = (place && place.label) || '';
+    placeNamePanel.hidden = false;
+    updateTrashVisibility();
+    requestAnimationFrame(function(){ placeNameInput.focus(); });
+  }
+
+  function closePlaceNamePanel(){
+    placeNamePanel.hidden = true;
+    editingPlaceId = null;
+    placeNameInput.value = '';
+    updateTrashVisibility();
+  }
+
+  placeNameSave.addEventListener('click', function(){
+    var text = placeNameInput.value.trim();
+    if (editingPlaceId){
+      var place = places.find(function(p){ return p.id === editingPlaceId; });
+      if (place) place.label = text;
+    }
+    closePlaceNamePanel();
+    redrawGroups();
+    saveState();
+  });
+
+  placeNameDelete.addEventListener('click', function(){
+    if (editingPlaceId) removePlaceCompletely(editingPlaceId);
+    closePlaceNamePanel();
+  });
+
+  placeNameCancel.addEventListener('click', function(){
+    closePlaceNamePanel();
+  });
+
+  placeNameInput.addEventListener('keydown', function(ev){
+    if (ev.key === 'Enter'){ ev.preventDefault(); placeNameSave.click(); }
+  });
+
+  function removeConnection(connId){
+    connections = connections.filter(function(c){ return c.id !== connId; });
+    redrawConnections();
+    saveState();
+  }
+
+  function removeConnectionsFor(hexId){
+    connections = connections.filter(function(c){ return c.a !== hexId && c.b !== hexId; });
+  }
+
+  // returns true when a nieuwe verbinding was created (vs. an existing one toggled off),
+  // so callers know whether a lijn was actually "getrokken"
+  function toggleConnection(aId, bId, edgeA, edgeB){
+    var existing = connections.find(function(c){
+      return (c.a === aId && c.b === bId) || (c.a === bId && c.b === aId);
+    });
+    if (existing){
+      connections = connections.filter(function(c){ return c.id !== existing.id; });
+      redrawConnections();
+      saveState();
+      return false;
+    }
+    // no specific kant given (e.g. the click-to-connect flow) — pick whichever edge of
+    // each hex actually faces the other, so the pijl still hooks into an edge midpoint
+    if (edgeA == null || edgeB == null){
+      var geom = getGeom();
+      var aHex = world.querySelector('[data-id="' + aId + '"]');
+      var bHex = world.querySelector('[data-id="' + bId + '"]');
+      if (aHex && bHex){
+        if (edgeA == null) edgeA = nearestEdgeIndexFor(aHex, hexCenterPx(bHex, geom), geom);
+        if (edgeB == null) edgeB = nearestEdgeIndexFor(bHex, hexCenterPx(aHex, geom), geom);
+      }
+    }
+    connections.push({ id: uid(), a: aId, b: bId, edgeA: edgeA, edgeB: edgeB });
+    redrawConnections();
+    saveState();
+    return true;
+  }
+
+  function clearSelection(){
+    if (selectedId){
+      var prev = world.querySelector('[data-id="' + selectedId + '"]');
+      if (prev) prev.classList.remove('selected');
+    }
+    selectedId = null;
+  }
+
+  function handleHexClick(hex){
+    var id = hex.dataset.id;
+    if (selectedId === id){
+      clearSelection();
+      return;
+    }
+    if (selectedId){
+      var created = toggleConnection(selectedId, id);
+      clearSelection();
+      if (created) setConnectMode(false);
+    } else {
+      selectedId = id;
+      hex.classList.add('selected');
+    }
+  }
+
+  function saveState(){
+    try{
+      var items = [];
+      world.querySelectorAll('.hex.placed').forEach(function(el){
+        items.push({ id: el.dataset.id, cat: el.dataset.cat, label: el.textContent, col: +el.dataset.col, row: +el.dataset.row });
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ items: items, connections: connections, groups: groups, persons: persons, personMarkers: personMarkers, places: places, pan: { x: panX, y: panY } }));
+    }catch(e){ /* storage unavailable, nothing placed persists this session */ }
+  }
+
+  function loadState(){
+    try{
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if(!raw) return false;
+      var data = JSON.parse(raw);
+      var geom = getGeom();
+      (data.items || []).forEach(function(it){
+        occupied[cellKey(it.col, it.row)] = it.id;
+        renderHex(it.cat, it.label, it.col, it.row, geom, it.id);
+      });
+      connections = data.connections || [];
+      // oude opgeslagen staat kende nog 'notitie' als kind-naam voor het vierkante kader —
+      // die is hernoemd naar 'groep', dus bestaande patronen blijven correct renderen
+      groups = (data.groups || []).map(function(g){
+        if (g.kind === 'notitie') g.kind = 'groep';
+        return g;
+      });
+      persons = data.persons || [];
+      places = data.places || [];
+      personMarkers = [];
+      personOccupied = {};
+      (data.personMarkers || []).forEach(function(m){
+        personMarkers.push(m);
+        personOccupied[personKey(m.x, m.y)] = m.id;
+        var person = persons.find(function(p){ return p.id === m.personId; });
+        renderPersonMarker(m.x, m.y, m.id, person ? person.label : '');
+      });
+      if (data.pan){ panX = data.pan.x; panY = data.pan.y; applyPan(); hasCenteredOnce = true; }
+      updateHasItems();
+      redrawConnections();
+      return true;
+    }catch(e){ return false; }
+  }
+
+  // removing a placed bouwsteen: select it (one click), then press Delete/Backspace —
+  // no little × button cluttering the hex itself
+  function removeHex(hex){
+    delete occupied[cellKey(+hex.dataset.col, +hex.dataset.row)];
+    if (selectedId === hex.dataset.id) selectedId = null;
+    removeConnectionsFor(hex.dataset.id);
+    removeHexFromGroups(hex.dataset.id);
+    hex.remove();
+    updateHasItems();
+    redrawConnections();
+    saveState();
+  }
+
+  document.addEventListener('keydown', function(ev){
+    if (ev.key === 'Escape'){
+      if (!patternsModal.hidden){ closePatternsModal(); return; }
+      if (!groupNotePanel.hidden){ closeGroupNotePanel(); return; }
+      if (!personNamePanel.hidden){ closePersonNamePanel(); return; }
+      if (!placeNamePanel.hidden){ closePlaceNamePanel(); return; }
+      if (!newItemPanel.hidden){ closeNewItemPanel(); return; }
+      if (personPickerOpen){ closePersonPicker(); return; }
+      if (plekPickerOpen){ plekToolBtn.click(); return; }
+      if (groupPick.length > 0 && !groupMode && !plekMode){ clearGroupPick(); return; }
+      if (connectMode){ connectToolBtn.click(); return; }
+      if (groupMode){ groupToolBtn.click(); return; }
+      if (spotlight){ spotlight = null; applySpotlight(); return; }
+      return;
+    }
+    if (ev.key !== 'Delete' && ev.key !== 'Backspace') return;
+    if (!selectedId) return;
+    var tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    var hex = world.querySelector('[data-id="' + selectedId + '"]');
+    if (!hex) return;
+    ev.preventDefault();
+    removeHex(hex);
+  });
+
+  // shrink a hex's text until it fits inside its box; long bouwsteen labels would
+  // otherwise spill out past the hexagon's edges
+  function fitHexText(el){
+    el.style.fontSize = '';
+    // with overflow:visible (the default), scrollHeight/scrollWidth just mirror
+    // clientHeight/clientWidth, so overflowing text is never detected; force a
+    // real overflow box while measuring, then restore
+    var prevOverflow = el.style.overflow;
+    el.style.overflow = 'hidden';
+    var minSize = 7;
+    var size = parseFloat(window.getComputedStyle(el).fontSize);
+    var guard = 0;
+    while ((el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1) && size > minSize && guard < 24){
+      size -= 0.5;
+      el.style.fontSize = size + 'px';
+      guard++;
+    }
+    el.style.overflow = prevOverflow;
+  }
+
+  // the icon lives only in the dock's static markup; canvas hexes and the drag ghost
+  // always show plain text, for every category (the icon "falls away" once dragged out)
+  function renderHex(cat, label, col, row, geom, id){
+    var hex = document.createElement('div');
+    hex.className = 'hex placed';
+    hex.dataset.cat = cat;
+    hex.dataset.id = id || uid();
+    hex.dataset.col = col;
+    hex.dataset.row = row;
+    hex.textContent = label;
+    positionHex(hex, col, row, geom);
+    world.appendChild(hex);
+    world.appendChild(outlinesSvg); // keep the outline layer painting on top of every hex
+    fitHexText(hex);
+    makeDraggableOnCanvas(hex);
+    return hex;
+  }
+
+  function positionHex(hex, col, row, geom){
+    var center = cellCenter(col, row, geom);
+    hex.style.left = (center.x - geom.w / 2) + 'px';
+    hex.style.top = (center.y - geom.h / 2) + 'px';
+    hex.dataset.col = col;
+    hex.dataset.row = row;
+  }
+
+  function showSnapPreview(col, row, geom){
+    if (!snapPreview){
+      snapPreview = document.createElement('div');
+      snapPreview.className = 'snap-preview';
+      world.appendChild(snapPreview);
+    }
+    snapPreview.style.width = geom.w + 'px';
+    snapPreview.style.height = geom.h + 'px';
+    var center = cellCenter(col, row, geom);
+    snapPreview.style.left = (center.x - geom.w / 2) + 'px';
+    snapPreview.style.top = (center.y - geom.h / 2) + 'px';
+    snapPreview.style.display = 'block';
+  }
+
+  function hideSnapPreview(){
+    if (snapPreview) snapPreview.style.display = 'none';
+  }
+
+  function makeDraggableOnCanvas(hex){
+    hex.addEventListener('pointerdown', function(ev){
+      ev.preventDefault();
+      ev.stopPropagation(); // don't also start a canvas pan
+      hex.setPointerCapture(ev.pointerId);
+      var geom = getGeom();
+      var ownKey = cellKey(+hex.dataset.col, +hex.dataset.row);
+      var origCol = +hex.dataset.col, origRow = +hex.dataset.row;
+      var startWorld = screenToWorld(ev.clientX, ev.clientY);
+      var offX = startWorld.x - parseFloat(hex.style.left);
+      var offY = startWorld.y - parseFloat(hex.style.top);
+      var startX = ev.clientX, startY = ev.clientY;
+      var moved = false;
+
+      function onMove(mv){
+        var dist = Math.hypot(mv.clientX - startX, mv.clientY - startY);
+        if (dist > CLICK_THRESHOLD && !moved){
+          moved = true;
+          hex.classList.add('dragging');
+          hex.style.zIndex = 10;
+        }
+        if (!moved) return;
+        var overTrash = isOverTrash(mv.clientX, mv.clientY);
+        trashZone.classList.toggle('drag-over', overTrash);
+        if (overTrash){
+          hideSnapPreview();
+          var w0 = screenToWorld(mv.clientX, mv.clientY);
+          hex.style.left = (w0.x - offX) + 'px';
+          hex.style.top = (w0.y - offY) + 'px';
+          scheduleRedraw();
+          return;
+        }
+        var w = screenToWorld(mv.clientX, mv.clientY);
+        var left = w.x - offX, top = w.y - offY;
+        hex.style.left = left + 'px';
+        hex.style.top = top + 'px';
+        scheduleRedraw();
+        var target = cellFromPoint(left + geom.w / 2, top + geom.h / 2, geom);
+        var free = nearestFreeCell(target.col, target.row, geom, ownKey);
+        if (free) showSnapPreview(free.col, free.row, geom);
+      }
+
+      function onUp(){
+        hex.removeEventListener('pointermove', onMove);
+        hex.removeEventListener('pointerup', onUp);
+        hex.removeEventListener('pointercancel', onUp);
+        hideSnapPreview();
+
+        if (!moved){
+          if (groupMode || plekMode) toggleGroupPick(hex);
+          else if (connectMode) handleHexClick(hex);
+          return;
+        }
+
+        hex.classList.remove('dragging');
+        hex.style.zIndex = '';
+
+        if (trashZone.classList.contains('drag-over')){
+          trashZone.classList.remove('drag-over');
+          delete occupied[ownKey];
+          removeHex(hex);
+          return;
+        }
+
+        var left = parseFloat(hex.style.left);
+        var top = parseFloat(hex.style.top);
+        var target = cellFromPoint(left + geom.w / 2, top + geom.h / 2, geom);
+        var dest = nearestFreeCell(target.col, target.row, geom, ownKey) || { col: origCol, row: origRow };
+
+        delete occupied[ownKey];
+        occupied[cellKey(dest.col, dest.row)] = hex.dataset.id;
+        positionHex(hex, dest.col, dest.row, geom);
+        redrawConnections();
+        saveState();
+      }
+      hex.addEventListener('pointermove', onMove);
+      hex.addEventListener('pointerup', onUp);
+      // als de aanraking wordt afgebroken (bv. door het besturingssysteem), toch gewoon
+      // netjes vastzetten op de dichtstbijzijnde vrije cel — anders blijft de bouwsteen
+      // voor altijd "los" op zijn laatste pixel-positie hangen, los van het raster
+      hex.addEventListener('pointercancel', onUp);
+    });
+  }
+
+  // panning + pinch-zoom: drag or pinch anywhere on the empty canvas (not a hex or a connection)
+  var panPointers = {};      // pointerId -> {x, y}
+  var panMode = null;        // 'pan' | 'pinch'
+  var panStartSingle = null;
+  var pinch = null;          // {startDist, startScale, startMid, startPan}
+  var panGestureMoved = false;
+
+  function startPinch(ids){
+    panMode = 'pinch';
+    var p0 = panPointers[ids[0]], p1 = panPointers[ids[1]];
+    pinch = {
+      startDist: dist(p0, p1),
+      startScale: scale,
+      startMid: midpoint(p0, p1),
+      startPan: { x: panX, y: panY }
+    };
+  }
+
+  canvas.addEventListener('pointerdown', function(ev){
+    if (ev.target.closest('.hex') || ev.target.closest('.conn-hit') || ev.target.closest('.zoom-controls') || ev.target.closest('.trash-zone') || ev.target.closest('.tool-controls') || ev.target.closest('.person-marker') || ev.target.closest('.group-toolbar') || ev.target.closest('.group-note-panel') || ev.target.closest('.person-name-panel')) return;
+    canvas.setPointerCapture(ev.pointerId);
+    panPointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };
+    var ids = Object.keys(panPointers);
+    canvas.classList.add('panning');
+    if (ids.length === 1){
+      panMode = 'pan';
+      panStartSingle = { x: ev.clientX, y: ev.clientY, panX: panX, panY: panY };
+      panGestureMoved = false;
+    } else if (ids.length >= 2){
+      startPinch(ids);
+    }
+  });
+
+  function onPanPointerMove(ev){
+    if (!(ev.pointerId in panPointers)) return;
+    panPointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };
+    var ids = Object.keys(panPointers);
+    if (panMode === 'pinch' && ids.length >= 2){
+      var p0 = panPointers[ids[0]], p1 = panPointers[ids[1]];
+      var newDist = dist(p0, p1);
+      var newMid = midpoint(p0, p1);
+      var newScale = clampScale(pinch.startScale * (newDist / Math.max(1, pinch.startDist)));
+      var r = canvas.getBoundingClientRect();
+      var worldAtStart = {
+        x: (pinch.startMid.x - r.left - pinch.startPan.x) / pinch.startScale,
+        y: (pinch.startMid.y - r.top - pinch.startPan.y) / pinch.startScale
+      };
+      scale = newScale;
+      panX = (newMid.x - r.left) - worldAtStart.x * scale;
+      panY = (newMid.y - r.top) - worldAtStart.y * scale;
+      applyPan();
+      panGestureMoved = true;
+    } else if (panMode === 'pan' && ids.length === 1){
+      var dx = ev.clientX - panStartSingle.x, dy = ev.clientY - panStartSingle.y;
+      if (Math.hypot(dx, dy) > CLICK_THRESHOLD) panGestureMoved = true;
+      panX = panStartSingle.panX + dx;
+      panY = panStartSingle.panY + dy;
+      applyPan();
+    }
+  }
+
+  function onPanPointerEnd(ev){
+    if (!(ev.pointerId in panPointers)) return;
+    delete panPointers[ev.pointerId];
+    var ids = Object.keys(panPointers);
+    if (ids.length === 0){
+      canvas.classList.remove('panning');
+      if (!panGestureMoved) clearSelection();
+      panMode = null;
+      saveState();
+    } else if (ids.length === 1){
+      // dropped from a pinch back to a single finger; restart the pan baseline smoothly
+      panMode = 'pan';
+      panStartSingle = { x: panPointers[ids[0]].x, y: panPointers[ids[0]].y, panX: panX, panY: panY };
+    }
+  }
+
+  document.addEventListener('pointermove', onPanPointerMove);
+  document.addEventListener('pointerup', onPanPointerEnd);
+  document.addEventListener('pointercancel', onPanPointerEnd);
+
+  // dragging a fresh copy out of the dock (compact row or expanded panel, both marked .source)
+  function wireSource(source){
+    source.addEventListener('pointerdown', function(ev){
+      ev.preventDefault();
+      // zorg dat deze aanraking bij `source` blijft horen, ook als de muis/vinger
+      // buiten het canvas (of de hele pagina) terechtkomt — anders kan een pointerup
+      // daar verloren gaan en blijft de ghost achter als een "spook"-bouwsteen die
+      // nooit in `occupied` stond, maar er wel precies zo uitziet als een echte
+      try{ source.setPointerCapture(ev.pointerId); }catch(e){ /* niet elk apparaat ondersteunt dit */ }
+
+      var cat = source.dataset.cat;
+      var label = source.dataset.label || source.textContent;
+      var geom = getGeom();
+      var ghost = document.createElement('div');
+      ghost.className = 'hex ghost';
+      ghost.dataset.cat = cat;
+      ghost.textContent = label;
+      ghost.style.left = (ev.clientX - geom.w / 2) + 'px';
+      ghost.style.top = (ev.clientY - geom.h / 2) + 'px';
+      document.body.appendChild(ghost);
+      fitHexText(ghost);
+
+      function moveGhost(mv){
+        ghost.style.left = (mv.clientX - geom.w / 2) + 'px';
+        ghost.style.top = (mv.clientY - geom.h / 2) + 'px';
+        var overTrash = isOverTrash(mv.clientX, mv.clientY);
+        trashZone.classList.toggle('drag-over', overTrash);
+        if (overTrash){ hideSnapPreview(); return; }
+        var canvasRect = canvas.getBoundingClientRect();
+        var withinCanvas = mv.clientX >= canvasRect.left && mv.clientX <= canvasRect.right &&
+                            mv.clientY >= canvasRect.top && mv.clientY <= canvasRect.bottom;
+        if (withinCanvas){
+          var w = screenToWorld(mv.clientX, mv.clientY);
+          var target = cellFromPoint(w.x, w.y, geom);
+          var free = nearestFreeCell(target.col, target.row, geom, null);
+          if (free) showSnapPreview(free.col, free.row, geom);
+        } else {
+          hideSnapPreview();
+        }
+      }
+
+      function cleanup(){
+        document.removeEventListener('pointermove', moveGhost);
+        document.removeEventListener('pointerup', drop);
+        document.removeEventListener('pointercancel', cancelDrop);
+        ghost.remove();
+        hideSnapPreview();
+      }
+
+      // de aanraking wordt afgebroken (bv. door het besturingssysteem of de browser) —
+      // nooit plaatsen, gewoon de ghost opruimen
+      function cancelDrop(){
+        cleanup();
+        trashZone.classList.remove('drag-over');
+      }
+
+      function drop(mv){
+        cleanup();
+
+        if (trashZone.classList.contains('drag-over')){
+          trashZone.classList.remove('drag-over');
+          return;
+        }
+
+        var canvasRect = canvas.getBoundingClientRect();
+        var withinCanvas = mv.clientX >= canvasRect.left && mv.clientX <= canvasRect.right &&
+                            mv.clientY >= canvasRect.top && mv.clientY <= canvasRect.bottom;
+        if (withinCanvas){
+          var w = screenToWorld(mv.clientX, mv.clientY);
+          var target = cellFromPoint(w.x, w.y, geom);
+          var dest = nearestFreeCell(target.col, target.row, geom, null);
+          if (dest){
+            var hex = renderHex(cat, label, dest.col, dest.row, geom);
+            occupied[cellKey(dest.col, dest.row)] = hex.dataset.id;
+            updateHasItems();
+            redrawConnections();
+            saveState();
+            // zodra een bouwsteen is gelegd, klapt het open menu weer in
+            if (openCategory) closeCategoryPanel();
+          }
+        }
+      }
+
+      document.addEventListener('pointermove', moveGhost);
+      document.addEventListener('pointerup', drop);
+      document.addEventListener('pointercancel', cancelDrop);
+    });
+  }
+  // categorie-items in de onderste menubalk zijn zelf nooit los te plaatsen bouwstenen:
+  // alleen de bouwstenen die onder een categorie hangen (via het item-panel) zijn
+  // sleepbaar. Categorieën zonder eigen bouwstenen (nog) zijn dus inert.
+  document.querySelectorAll('.category-item').forEach(function(source){
+    var cat = source.dataset.cat;
+    if (CATEGORY_ITEMS[cat]){
+      wireCategoryWithItems(source, cat);
+    }
+  });
+
+  // saved patronen: snapshots of the whole canvas (bouwstenen + verbindingen + notitie-groepen)
+  // that can be reopened later, kept separate from the single auto-saved "current" canvas
+  function loadPatternsList(){
+    try{
+      var raw = localStorage.getItem(PATTERNS_KEY);
+      return raw ? JSON.parse(raw) : [];
+    }catch(e){ return []; }
+  }
+
+  function savePatternsList(list){
+    try{ localStorage.setItem(PATTERNS_KEY, JSON.stringify(list)); }catch(e){ /* storage unavailable */ }
+  }
+
+  function collectCanvasSnapshot(){
+    var items = [];
+    world.querySelectorAll('.hex.placed').forEach(function(el){
+      items.push({ id: el.dataset.id, cat: el.dataset.cat, label: el.textContent, col: +el.dataset.col, row: +el.dataset.row });
+    });
+    return { items: items, connections: connections, groups: groups };
+  }
+
+  function formatPatternDate(ts){
+    try{
+      var d = new Date(ts);
+      return d.toLocaleDateString('nl-NL', { day: 'numeric', month: 'short', year: 'numeric' }) +
+        ' ' + d.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+    }catch(e){ return ''; }
+  }
+
+  function renderPatternsList(){
+    var list = loadPatternsList();
+    patternsList.innerHTML = '';
+    if (list.length === 0){
+      var empty = document.createElement('div');
+      empty.className = 'patterns-empty';
+      empty.textContent = 'Nog geen patronen opgeslagen.';
+      patternsList.appendChild(empty);
+      return;
+    }
+    list.slice().reverse().forEach(function(p){
+      var row = document.createElement('div');
+      row.className = 'pattern-row';
+
+      var info = document.createElement('div');
+      info.className = 'pattern-row-info';
+      var name = document.createElement('div');
+      name.className = 'pattern-row-name';
+      name.textContent = p.name;
+      var meta = document.createElement('div');
+      meta.className = 'pattern-row-meta';
+      var count = (p.items || []).length;
+      meta.textContent = count + (count === 1 ? ' bouwsteen · ' : ' bouwstenen · ') + formatPatternDate(p.savedAt);
+      info.appendChild(name);
+      info.appendChild(meta);
+
+      var actions = document.createElement('div');
+      actions.className = 'pattern-row-actions';
+      var loadBtn = document.createElement('button');
+      loadBtn.type = 'button';
+      loadBtn.className = 'btn btn-small';
+      loadBtn.textContent = 'Openen';
+      loadBtn.addEventListener('click', function(){ loadPattern(p); });
+      var delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'btn btn-small btn-icon btn-danger';
+      delBtn.setAttribute('aria-label', 'Verwijder patroon');
+      delBtn.innerHTML = '&times;';
+      delBtn.addEventListener('click', function(){ deletePattern(p.id); });
+      actions.appendChild(loadBtn);
+      actions.appendChild(delBtn);
+
+      row.appendChild(info);
+      row.appendChild(actions);
+      patternsList.appendChild(row);
+    });
+  }
+
+  function openPatternsModal(){
+    renderPatternsList();
+    patternNameInput.value = '';
+    patternsModal.hidden = false;
+    updateTrashVisibility();
+    requestAnimationFrame(function(){ patternNameInput.focus(); });
+  }
+
+  function closePatternsModal(){
+    patternsModal.hidden = true;
+    updateTrashVisibility();
+  }
+
+  function saveCurrentAsPattern(){
+    var name = patternNameInput.value.trim();
+    if (!name){ patternNameInput.focus(); return; }
+    var list = loadPatternsList();
+    var snapshot = collectCanvasSnapshot();
+    list.push({ id: uid(), name: name, savedAt: Date.now(), items: snapshot.items, connections: snapshot.connections, groups: snapshot.groups });
+    savePatternsList(list);
+    patternNameInput.value = '';
+    renderPatternsList();
+  }
+
+  function loadPattern(pattern){
+    world.querySelectorAll('.hex.placed').forEach(function(el){ el.remove(); });
+    world.querySelectorAll('.person-marker').forEach(function(el){ el.remove(); });
+    occupied = {};
+    connections = [];
+    groups = [];
+    persons = [];
+    personMarkers = [];
+    personOccupied = {};
+    places = [];
+    spotlight = null;
+    applySpotlight();
+    selectedId = null;
+    clearGroupPick();
+
+    var geom = getGeom();
+    (pattern.items || []).forEach(function(it){
+      occupied[cellKey(it.col, it.row)] = it.id;
+      renderHex(it.cat, it.label, it.col, it.row, geom, it.id);
+    });
+    connections = pattern.connections || [];
+    groups = (pattern.groups || []).map(function(g){ return { id: g.id, hexIds: (g.hexIds || []).slice(), note: g.note, kind: (g.kind === 'notitie' ? 'groep' : (g.kind || 'groep')), placeId: g.placeId }; });
+    updateHasItems();
+    redrawConnections();
+    saveState();
+    closePatternsModal();
+  }
+
+  function deletePattern(id){
+    var list = loadPatternsList().filter(function(p){ return p.id !== id; });
+    savePatternsList(list);
+    renderPatternsList();
+  }
+
+  // a worked voorbeeld-patroon (Sofie, 14) seeded once into de patronen-lijst, so there's
+  // a concrete example to open, study and demo — never reseeded once someone has deleted it
+  var DEMO_SEED_FLAG = 'bouwstenen-demo-sofie-seeded-v1';
+  var DEMO_SOFIE_PATTERN = {
+    id: 'demo-sofie-14',
+    name: 'Voorbeeld: Sofie, 14 jaar',
+    savedAt: Date.parse('2026-10-16T09:00:00') || Date.now(),
+    items: [
+      { id: 'demo-druk',      cat: 'omgeving', label: 'druk op school',                col: 0,  row: 2 },
+      { id: 'demo-gespannen', cat: 'lijf',      label: 'gespannen of onrustig lijf',     col: 3,  row: 0 },
+      { id: 'demo-energie',   cat: 'lijf',      label: 'weinig energie',                 col: 3,  row: 2 },
+      { id: 'demo-hoofdpijn', cat: 'lijf',      label: 'hoofdpijn of buikpijn',           col: 3,  row: 4 },
+      { id: 'demo-onzeker',   cat: 'jij',       label: 'onzeker',                        col: 6,  row: 0 },
+      { id: 'demo-angstig',   cat: 'jij',       label: 'angstig of bang',                col: 6,  row: 2 },
+      { id: 'demo-online',    cat: 'omgeving',  label: 'nare dingen online',              col: 6,  row: 5 },
+      { id: 'demo-schaamte',  cat: 'jij',       label: 'schaamte',                       col: 8,  row: 5 },
+      { id: 'demo-niksvert',  cat: 'anderen',   label: 'niks vertellen',                 col: 9,  row: 1 },
+      { id: 'demo-vermijden', cat: 'anderen',   label: 'vermijden',                      col: 9,  row: 3 },
+      { id: 'demo-vrienden',  cat: 'krachten',  label: 'fijne vrienden',                 col: 9,  row: 7 },
+      { id: 'demo-tekenen',   cat: 'krachten',  label: 'iets waar ik goed in ben',       col: 11, row: 7 }
+    ],
+    connections: [
+      { id: 'demo-c1', a: 'demo-druk',      b: 'demo-gespannen' },
+      { id: 'demo-c2', a: 'demo-gespannen', b: 'demo-energie' },
+      { id: 'demo-c3', a: 'demo-gespannen', b: 'demo-hoofdpijn' },
+      { id: 'demo-c4', a: 'demo-gespannen', b: 'demo-onzeker' },
+      { id: 'demo-c5', a: 'demo-onzeker',   b: 'demo-angstig' },
+      { id: 'demo-c6', a: 'demo-online',    b: 'demo-schaamte' },
+      { id: 'demo-c7', a: 'demo-angstig',   b: 'demo-niksvert' },
+      { id: 'demo-c8', a: 'demo-schaamte',  b: 'demo-vermijden' },
+      { id: 'demo-c9', a: 'demo-niksvert',  b: 'demo-vermijden' },
+      { id: 'demo-c10', a: 'demo-vermijden', b: 'demo-druk' }
+    ],
+    groups: [
+      { id: 'demo-g1', hexIds: ['demo-druk'],
+        note: 'Op school loopt de druk op. Sofie voelt dat ze het niet meer bijbeent.' },
+      { id: 'demo-g2', hexIds: ['demo-gespannen', 'demo-energie', 'demo-hoofdpijn'],
+        note: 'Haar lijf reageert eerst: ze slaapt slecht, wordt overdag moe en gespannen, en krijgt vaak hoofdpijn.' },
+      { id: 'demo-g3', hexIds: ['demo-onzeker', 'demo-angstig'],
+        note: 'De spanning zet door in hoe ze zich voelt: ze wordt onzeker en bang om fouten te maken.' },
+      { id: 'demo-g4', hexIds: ['demo-online', 'demo-schaamte'],
+        note: '’s Avonds op haar telefoon ziet ze hoe goed het bij anderen lijkt te gaan: de schaamte slaat toe, ze voelt zich tekortschieten.' },
+      { id: 'demo-g5', hexIds: ['demo-niksvert', 'demo-vermijden'],
+        note: 'In plaats van dit te delen trekt ze zich terug: ze vertelt thuis niks en vermijdt vriendinnen, uit angst dat ze het toch niet begrijpen. Daardoor blijft ze alleen met het gevoel.' },
+      { id: 'demo-g6', hexIds: ['demo-vrienden', 'demo-tekenen'],
+        note: 'Kantelpunt: dit zijn krachten die nu nog los staan van het patroon. Vlak vóór het terugtrekken — kan ze naar een van deze vriendinnen toe, of haar hoofd leegmaken door te tekenen?' }
+    ]
+  };
+
+  function seedDemoPatternIfNeeded(){
+    try{
+      if (localStorage.getItem(DEMO_SEED_FLAG)) return;
+      var list = loadPatternsList();
+      list.push(DEMO_SOFIE_PATTERN);
+      savePatternsList(list);
+      localStorage.setItem(DEMO_SEED_FLAG, '1');
+    }catch(e){ /* storage unavailable, skip silently */ }
+  }
+
+  patternsBtn.addEventListener('click', openPatternsModal);
+  patternsCloseBtn.addEventListener('click', closePatternsModal);
+  patternsBackdrop.addEventListener('click', closePatternsModal);
+  patternSaveBtn.addEventListener('click', saveCurrentAsPattern);
+  patternNameInput.addEventListener('keydown', function(ev){
+    if (ev.key === 'Enter'){ ev.preventDefault(); saveCurrentAsPattern(); }
+  });
+
+  clearBtn.addEventListener('click', function(){
+    world.querySelectorAll('.hex.placed').forEach(function(el){ el.remove(); });
+    world.querySelectorAll('.person-marker').forEach(function(el){ el.remove(); });
+    occupied = {};
+    connections = [];
+    groups = [];
+    persons = [];
+    personMarkers = [];
+    personOccupied = {};
+    places = [];
+    spotlight = null;
+    applySpotlight();
+    clearGroupPick();
+    selectedId = null;
+    updateHasItems();
+    redrawConnections();
+    saveState();
+  });
+
+  window.addEventListener('resize', function(){
+    refreshGeom();
+    updateDockOffset();
+    redrawConnections();
+  });
+
+  updateDockOffset();
+  refreshGeom();
+  loadCustomItems();
+  seedDemoPatternIfNeeded();
+  var restored = loadState();
+  if (!restored || !hasCenteredOnce) centerView();
+  saveState();
+})();
+</script>
+
+</body></html>
